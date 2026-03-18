@@ -1,0 +1,13 @@
+defaults:
+  - model: default
+  - data: default
+  - _self_
+
+trainer:
+  max_epochs: 10
+  accelerator: auto
+  devices: auto
+
+logger:
+  project: "cv-pipeline"
+  name: "timm-resnet18-run"
