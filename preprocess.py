@@ -54,5 +54,5 @@ if __name__ == "__main__":
     preprocess_binary_nih(
         raw_dir="/kaggle/input/datasets/organizations/nih-chest-xrays/data",
         output_dir="data/preprocessed",
-        csv_path="/kaggle/input/datasets/organizations/nih-chest-xrays/data/Data_Entry_2017.csvs"
+        csv_path="/kaggle/input/datasets/organizations/nih-chest-xrays/data/Data_Entry_2017.csv"
     )
