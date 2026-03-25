@@ -9,5 +9,5 @@ trainer:
   devices: auto
 
 logger:
-  project: "cv-pipeline"
-  name: "timm-resnet18-run"
+  project: "CXR-pipeline"
+  name: "resnet18-run"
