@@ -52,7 +52,7 @@ def preprocess_binary_nih(raw_dir: str, output_dir: str, csv_path: str, val_size
 
 if __name__ == "__main__":
     preprocess_binary_nih(
-        raw_dir="data/raw/NIH_Chest_Xrays",
+        raw_dir="/kaggle/input/datasets/organizations/nih-chest-xrays/data",
         output_dir="data/preprocessed",
-        csv_path="data/raw/NIH_Chest_Xrays/Data_Entry_2017.csv"
+        csv_path="/kaggle/input/datasets/organizations/nih-chest-xrays/data/Data_Entry_2017.csvs"
     )
