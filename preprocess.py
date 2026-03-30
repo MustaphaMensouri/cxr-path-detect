@@ -1,8 +1,3 @@
-"""
-NIH Chest X-ray Preprocessor — lung pathologies only
-Usage: python preprocess.py --data_root /path/to/dataset --output_dir ./output
-"""
-
 import argparse
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
@@ -18,6 +13,7 @@ LUNG_LABELS = [
     "Fibrosis", "Infiltration", "Mass", "Nodule",
     "Pleural_Thickening", "Pneumonia", "Pneumothorax",
 ]
+KEEP_LABELS = LUNG_LABELS + ["No Finding"]
 
 
 def resize_one(args):
@@ -40,19 +36,18 @@ def main(data_root, output_dir, val_split=0.1, num_workers=4):
     labels = df["Finding Labels"].str.get_dummies(sep="|")
     df = pd.concat([df.drop(columns="Finding Labels"), labels], axis=1)
 
-    # keep only lung pathology columns and rows that have at least one
-    lung_cols = [l for l in LUNG_LABELS if l in df.columns]
-    df = df[df[lung_cols].any(axis=1)][["Image Index", "Patient ID", "Patient Age", "Patient Gender", "View Position", *lung_cols]]
-    print(f"  {len(df):,} images kept after filtering to lung pathologies")
+    keep_cols = [l for l in KEEP_LABELS if l in df.columns]
+    df = df[df[keep_cols].any(axis=1)][["Image Index", "Patient ID", "Patient Age", "Patient Gender", "View Position", *keep_cols]]
+    print(f"  {len(df):,} images kept ({df['No Finding'].sum():,} normal, {(~df['No Finding'].astype(bool)).sum():,} pathology)")
 
     # ── splits ────────────────────────────────────────────────────────────────
     train_val = set((data_root / "train_val_list.txt").read_text().split())
-    test      = set((data_root / "test_list.txt").read_text().split())
+    test = set((data_root / "test_list.txt").read_text().split())
 
-    tv_df    = df[df["Image Index"].isin(train_val)]
+    tv_df = df[df["Image Index"].isin(train_val)]
     patients = tv_df["Patient ID"].unique()
     np.random.default_rng(42).shuffle(patients)
-    cut      = int(len(patients) * val_split)
+    cut = int(len(patients) * val_split)
 
     splits = {
         "train": tv_df[~tv_df["Patient ID"].isin(patients[:cut])],
