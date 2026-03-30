@@ -1,7 +1,7 @@
 import hydra
 import wandb
 import lightning as L
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
+from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig
 
