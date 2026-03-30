@@ -46,9 +46,20 @@ class XrayDataModule(L.LightningDataModule):
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])
 
+    # def _loader(self, split, transform, shuffle=False):
+    #     ds = XrayDataset(f"{self.cfg.data_dir}/{split}.csv", self.cfg.data_dir, transform)
+    #     return DataLoader(ds, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers, shuffle=shuffle, pin_memory=True)
     def _loader(self, split, transform, shuffle=False):
         ds = XrayDataset(f"{self.cfg.data_dir}/{split}.csv", self.cfg.data_dir, transform)
-        return DataLoader(ds, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers, shuffle=shuffle, pin_memory=True)
+        return DataLoader(
+            ds,
+            batch_size=self.cfg.batch_size,
+            num_workers=self.cfg.num_workers,
+            shuffle=shuffle,
+            pin_memory=self.cfg.pin_memory,
+            prefetch_factor=self.cfg.prefetch_factor,
+            persistent_workers=self.cfg.persistent_workers,
+        )
 
     def train_dataloader(self): return self._loader("train", self.train_tf, shuffle=True)
     def val_dataloader(self):   return self._loader("val",   self.val_tf)
