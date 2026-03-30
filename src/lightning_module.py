@@ -26,7 +26,13 @@ class XrayClassifier(L.LightningModule):
         x, y = batch
         logits = self(x)
         loss = self.loss(logits, y)
-        self.log_dict({f"{stage}/loss": loss, f"{stage}/acc": self.acc(logits, y), f"{stage}/auc": self.auc(logits, y)}, prog_bar=True)
+        self.log_dict(
+            {f"{stage}/loss": loss, f"{stage}/acc": self.acc(logits, y), f"{stage}/auc": self.auc(logits, y)},
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
         return loss
 
     def training_step(self, batch, _):   return self._step(batch, "train")
