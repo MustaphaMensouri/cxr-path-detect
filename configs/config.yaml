@@ -9,7 +9,7 @@ train:
   devices: 2                # number of GPUs
   strategy: ddp             # DistributedDataParallel
   precision: 16-mixed
-  log_every_n_steps: 10
+  log_every_n_steps: 50
   enable_progress_bar: true  # kills the biggest RAM drain
   enable_model_summary: false # no need after first run
 
