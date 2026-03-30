@@ -20,6 +20,8 @@ def train(cfg: DictConfig):
     trainer = L.Trainer(
         max_epochs=cfg.train.max_epochs,
         accelerator=cfg.train.accelerator,
+        devices=cfg.train.devices,
+        strategy=cfg.train.strategy,
         precision=cfg.train.precision,
         log_every_n_steps=cfg.train.log_every_n_steps,
         logger=logger,
