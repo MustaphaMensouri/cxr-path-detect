@@ -1,13 +1,14 @@
 defaults:
-  - model: default
   - data: default
+  - model: default
   - _self_
 
-trainer:
-  max_epochs: 10
+train:
+  max_epochs: 50
   accelerator: auto
-  devices: auto
+  precision: 16-mixed
+  log_every_n_steps: 10
 
-logger:
-  project: "CXR-pipeline"
-  name: "resnet18-run"
+wandb:
+  project: nih-chest-xray
+  name: null   # auto-generated if null

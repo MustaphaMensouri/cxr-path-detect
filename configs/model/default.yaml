@@ -1,5 +1,4 @@
-# @package _global_
-model:
-  model_name: "resnet18"
-  num_classes: 2        # binary: Normal vs Pathology
-  lr: 0.001
+backbone: resnet50
+pretrained: true
+lr: 1e-4
+weight_decay: 1e-5
