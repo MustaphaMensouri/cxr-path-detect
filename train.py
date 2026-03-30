@@ -24,10 +24,13 @@ def train(cfg: DictConfig):
         strategy=cfg.train.strategy,
         precision=cfg.train.precision,
         log_every_n_steps=cfg.train.log_every_n_steps,
+        enable_progress_bar=cfg.train.enable_progress_bar,
+        enable_model_summary=cfg.train.enable_model_summary,
         logger=logger,
         callbacks=[
             ModelCheckpoint(monitor="val/auc", mode="max", save_top_k=1, filename="best"),
             EarlyStopping(monitor="val/auc",   mode="max", patience=5),
+            TQDMProgressBar(refresh_rate=50),
         ],
     )
 
