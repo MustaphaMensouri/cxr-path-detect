@@ -1,4 +1,4 @@
-backbone: resnet50
+backbone: resnet18
 pretrained: true
 lr: 2e-4
 weight_decay: 1e-5

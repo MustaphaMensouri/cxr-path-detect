@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
 from torchvision import models
-from torchmetrics import Accuracy, AUROC
+from torchmetrics import AUROC, AveragePrecision
 import lightning as L
+from weighted_bce import WeightedBCELoss
 
 
 class XrayClassifier(L.LightningModule):
@@ -11,27 +12,25 @@ class XrayClassifier(L.LightningModule):
         self.save_hyperparameters(ignore=["cfg"])
         self.cfg = cfg
 
-        backbone = getattr(models, cfg.backbone)(weights="DEFAULT" if cfg.pretrained else None)
+        backbone    = getattr(models, cfg.backbone)(weights="DEFAULT" if cfg.pretrained else None)
         backbone.fc = nn.Linear(backbone.fc.in_features, num_classes)
-        self.model = backbone
+        self.model  = backbone
 
-        self.loss = nn.CrossEntropyLoss()
-        self.acc  = Accuracy(task="multiclass", num_classes=num_classes)
-        self.auc  = AUROC(task="multiclass", num_classes=num_classes)
+        self.loss = WeightedBCELoss()
+        self.auc  = AUROC(task="multilabel", num_labels=num_classes)
+        self.ap   = AveragePrecision(task="multilabel", num_labels=num_classes)
 
     def forward(self, x):
         return self.model(x)
 
     def _step(self, batch, stage):
-        x, y = batch
-        logits = self(x)
-        loss = self.loss(logits, y)
+        x, y    = batch
+        logits  = self(x)
+        loss    = self.loss(logits, y)
+        probs   = torch.sigmoid(logits)
         self.log_dict(
-            {f"{stage}/loss": loss, f"{stage}/acc": self.acc(logits, y), f"{stage}/auc": self.auc(logits, y)},
-            prog_bar=True,
-            on_step=False,
-            on_epoch=True,
-            sync_dist=True,
+            {f"{stage}/loss": loss, f"{stage}/auc": self.auc(probs, y.int()), f"{stage}/ap": self.ap(probs, y.int())},
+            prog_bar=True, on_step=False, on_epoch=True, sync_dist=True,
         )
         return loss
 
@@ -40,6 +39,6 @@ class XrayClassifier(L.LightningModule):
     def test_step(self, batch, _):       return self._step(batch, "test")
 
     def configure_optimizers(self):
-        opt = torch.optim.AdamW(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=10)
+        opt       = torch.optim.AdamW(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.cfg.epochs)
         return {"optimizer": opt, "lr_scheduler": scheduler}
