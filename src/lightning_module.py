@@ -8,7 +8,7 @@ import lightning as L
 class XrayClassifier(L.LightningModule):
     def __init__(self, cfg, num_classes):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["cfg"])
         self.cfg = cfg
 
         backbone = getattr(models, cfg.backbone)(weights="DEFAULT" if cfg.pretrained else None)

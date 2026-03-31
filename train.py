@@ -8,6 +8,9 @@ from omegaconf import DictConfig
 from src.datamodule import XrayDataModule, LABELS
 from src.lightning_module import XrayClassifier
 
+import torch
+torch.serialization.add_safe_globals([DictConfig])
+
 
 @hydra.main(config_path="configs", config_name="config", version_base=None)
 def train(cfg: DictConfig):
