@@ -17,7 +17,7 @@ def train(cfg: DictConfig):
     L.seed_everything(42)
 
     dm     = XrayDataModule(cfg.data)
-    model  = XrayClassifier(cfg.model, num_classes=len(LABELS))
+    model  = XrayClassifier(cfg.model, num_classes=len(LABELS), max_epochs=cfg.train.max_epochs)
     logger = WandbLogger(project=cfg.wandb.project, name=cfg.wandb.name)
 
     trainer = L.Trainer(

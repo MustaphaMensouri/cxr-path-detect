@@ -38,10 +38,11 @@ class WeightedBCELoss(nn.Module):
 
 
 class XrayClassifier(L.LightningModule):
-    def __init__(self, cfg, num_classes):
+    def __init__(self, cfg, num_classes, max_epochs):
         super().__init__()
         self.save_hyperparameters(ignore=["cfg"])
         self.cfg = cfg
+        self.max_epochs = max_epochs
 
         backbone    = getattr(models, cfg.backbone)(weights="DEFAULT" if cfg.pretrained else None)
         backbone.fc = nn.Linear(backbone.fc.in_features, num_classes)
@@ -71,5 +72,5 @@ class XrayClassifier(L.LightningModule):
 
     def configure_optimizers(self):
         opt       = torch.optim.AdamW(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.cfg.epochs)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.self.max_epochs)
         return {"optimizer": opt, "lr_scheduler": scheduler}
