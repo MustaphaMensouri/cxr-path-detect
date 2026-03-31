@@ -72,5 +72,5 @@ class XrayClassifier(L.LightningModule):
 
     def configure_optimizers(self):
         opt       = torch.optim.AdamW(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.self.max_epochs)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.max_epochs)
         return {"optimizer": opt, "lr_scheduler": scheduler}
