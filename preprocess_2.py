@@ -2,19 +2,20 @@ import argparse
 import os
 import warnings
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import cv2
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-# ── silence noisy TF logs ──────────────────────────────────────────────────
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 import tensorflow as tf
 from tensorflow.keras.applications.efficientnet import preprocess_input
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Image helpers
+# Helpers (pure-numpy, called in thread workers)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_gamma_lut(gamma: float = 1.5) -> np.ndarray:
@@ -24,25 +25,10 @@ def build_gamma_lut(gamma: float = 1.5) -> np.ndarray:
         dtype=np.uint8,
     )
 
-def apply_gamma(rgb_uint8: np.ndarray, lut: np.ndarray) -> np.ndarray:
-    return cv2.LUT(rgb_uint8, lut)
 
-def load_as_rgb(img_path: str, seg_size: int) -> np.ndarray:
-    """Reads image and upscales to seg_size (e.g. 512) for the U-Net."""
-    img_raw = tf.io.read_file(img_path)
-    img = tf.image.decode_image(img_raw, channels=1, expand_animations=False)
-    img = tf.image.resize(img, (seg_size, seg_size))
-    img_np = img.numpy().astype(np.uint8)
-    return cv2.cvtColor(img_np, cv2.COLOR_GRAY2RGB)
+def apply_gamma(rgb: np.ndarray, lut: np.ndarray) -> np.ndarray:
+    return cv2.LUT(rgb, lut)
 
-def predict_mask(model, rgb_gamma: np.ndarray) -> np.ndarray:
-    tensor = preprocess_input(tf.cast(rgb_gamma, tf.float32))
-    tensor = tf.expand_dims(tensor, axis=0)
-    probs  = model.predict(tensor, verbose=0)[0]
-    mask   = (probs > 0.5).astype(np.uint8)
-    if mask.ndim == 3:
-        mask = np.squeeze(mask, axis=-1)
-    return mask
 
 def refine_mask(mask: np.ndarray, dilation_kernel: int = 30) -> np.ndarray:
     kernel  = np.ones((dilation_kernel, dilation_kernel), np.uint8)
@@ -57,97 +43,262 @@ def refine_mask(mask: np.ndarray, dilation_kernel: int = 30) -> np.ndarray:
     cv2.drawContours(hull_mask, [hull], -1, 1, thickness=cv2.FILLED)
     return hull_mask
 
-def extract_roi(rgb_gamma: np.ndarray, hull_mask: np.ndarray, final_size: int = 224) -> np.ndarray:
-    """Masks the image at 512x512 then downsamples to final_size (224)."""
-    mask_3d = hull_mask[:, :, np.newaxis]
-    roi = (rgb_gamma * mask_3d).astype(np.uint8)
-    # LANCZOS4 is high-quality for downsampling
-    return cv2.resize(roi, (final_size, final_size), interpolation=cv2.INTER_LANCZOS4)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Processing Logic
-# ─────────────────────────────────────────────────────────────────────────────
-
-def process_one(src_path, dst_path, model, gamma_lut, seg_size, jpeg_quality, final_size) -> bool:
+def save_roi(
+    rgb_512:     np.ndarray,   # gamma-corrected image at seg_size
+    mask_512:    np.ndarray,   # raw float32 prob mask from model (H,W) or (H,W,1)
+    dst_path:    Path,
+    final_size:  int,
+    jpeg_quality: int,
+) -> bool:
+    """
+    Full CPU post-processing for one image.
+    Runs in a thread worker so it overlaps with the next GPU batch.
+    """
     try:
         dst_path.parent.mkdir(parents=True, exist_ok=True)
-        # 1. Load & Upscale to 512
-        rgb = load_as_rgb(str(src_path), seg_size)
-        # 2. Enhance
-        rgb_gamma = apply_gamma(rgb, gamma_lut)
-        # 3. Segment at 512
-        raw_mask  = predict_mask(model, rgb_gamma)
-        hull_mask = refine_mask(raw_mask)
-        # 4. Extract & Downscale to final_size (224)
-        roi_rgb   = extract_roi(rgb_gamma, hull_mask, final_size=final_size)
-        # 5. Save
-        roi_bgr = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(str(dst_path), roi_bgr, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+
+        # 1. Binarise mask
+        if mask_512.ndim == 3:
+            mask_512 = np.squeeze(mask_512, axis=-1)
+        binary = (mask_512 > 0.5).astype(np.uint8)
+
+        # 2. Refine → convex hull
+        hull = refine_mask(binary)
+
+        # 3. Apply mask & resize to final output size
+        roi = (rgb_512 * hull[:, :, np.newaxis]).astype(np.uint8)
+        roi = cv2.resize(roi, (final_size, final_size), interpolation=cv2.INTER_LANCZOS4)
+
+        # 4. Write JPEG
+        bgr = cv2.cvtColor(roi, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(str(dst_path), bgr, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
         return True
     except Exception as exc:
-        warnings.warn(f"[warn] {src_path.name}: {exc}")
+        warnings.warn(f"[warn] {dst_path.name}: {exc}")
         return False
 
-def process_split(csv_path, prep_dir, out_dir, model, gamma_lut, seg_size, jpeg_quality, final_size):
+
+# ─────────────────────────────────────────────────────────────────────────────
+# tf.data loader  –  runs on CPU in parallel, feeds GPU
+# ─────────────────────────────────────────────────────────────────────────────
+
+def make_dataset(
+    src_paths:   list,
+    seg_size:    int,
+    gamma_lut:   np.ndarray,
+    batch_size:  int,
+    num_workers: int,
+) -> tf.data.Dataset:
+    """
+    Returns a batched dataset that yields (gamma_rgb_uint8, model_input_float32).
+    Loading, resizing, gamma, and EfficientNet normalisation all happen in
+    parallel on the CPU while the GPU runs the previous batch.
+    """
+    gamma_tf = tf.constant(gamma_lut, dtype=tf.uint8)
+
+    def load_and_preprocess(path):
+        raw = tf.io.read_file(path)
+        img = tf.image.decode_image(raw, channels=1, expand_animations=False)
+        img = tf.image.resize(img, (seg_size, seg_size))
+        img = tf.cast(img, tf.uint8)
+        img = tf.image.grayscale_to_rgb(img)                        # (H,W,3) uint8
+
+        # Gamma via vectorised LUT gather (no Python loop)
+        img_gamma = tf.cast(tf.gather(gamma_tf, tf.cast(img, tf.int32)), tf.uint8)
+
+        # Model input (EfficientNet normalisation)
+        model_input = preprocess_input(tf.cast(img_gamma, tf.float32))
+
+        return img_gamma, model_input
+
+    return (
+        tf.data.Dataset.from_tensor_slices(src_paths)
+        .map(load_and_preprocess,
+             num_parallel_calls=num_workers,
+             deterministic=True)            # keep order to match src_paths list
+        .batch(batch_size)
+        .prefetch(tf.data.AUTOTUNE)         # overlap GPU compute with CPU loading
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Split processor
+# ─────────────────────────────────────────────────────────────────────────────
+
+def process_split(
+    csv_path:       Path,
+    prep_dir:       Path,
+    out_dir:        Path,
+    model,
+    gamma_lut:      np.ndarray,
+    seg_size:       int,
+    final_size:     int,
+    batch_size:     int,
+    jpeg_quality:   int,
+    num_workers:    int,
+    checkpoint_file: Path,
+) -> None:
     split_name = csv_path.stem
     df = pd.read_csv(csv_path)
-    
-    # Map input PNGs to output JPEGs
-    records = []
-    for _, row in df.iterrows():
-        src = prep_dir / row["image_path"]
-        dst = out_dir / "images" / (Path(row["image_path"]).stem + ".jpg")
-        records.append((src, dst))
 
-    failed_stems = set()
-    for src, dst in tqdm(records, desc=f"Processing {split_name}"):
-        ok = process_one(src, dst, model, gamma_lut, seg_size, jpeg_quality, final_size)
-        if not ok:
-            failed_stems.add(src.stem)
+    # Build src → dst pairs for every row
+    all_records = [
+        (prep_dir / row["image_path"],
+         out_dir / "images" / (Path(row["image_path"]).stem + ".jpg"))
+        for _, row in df.iterrows()
+    ]
 
-    # ── Update and Clean CSV ──
+    # ── Resume support: skip images already written ───────────────────────
+    done: set = set()
+    if checkpoint_file.exists():
+        done = set(checkpoint_file.read_text().splitlines())
+        print(f"  [{split_name}] resuming – {len(done):,} already done, "
+              f"{len(all_records) - len(done):,} remaining")
+
+    records = [(s, d) for s, d in all_records if d.name not in done]
+    if not records:
+        print(f"  [{split_name}] nothing to do.")
+        _write_csv(df, out_dir, split_name, failed=set())
+        return
+
+    src_paths = [str(s) for s, _ in records]
+    dst_paths = [d       for _, d in records]
+
+    # ── Build tf.data pipeline ────────────────────────────────────────────
+    ds = make_dataset(src_paths, seg_size, gamma_lut, batch_size, num_workers)
+
+    failed_stems: set = set()
+    processed = 0
+
+    # ThreadPoolExecutor handles CPU post-processing & disk writes
+    # while the GPU is already working on the next batch
+    with ThreadPoolExecutor(max_workers=num_workers) as pool, \
+         open(checkpoint_file, "a") as ckpt_f:
+
+        pending_futures: dict = {}
+        pbar = tqdm(total=len(records), desc=split_name, unit="img")
+
+        for imgs_gamma_batch, model_input_batch in ds:
+            # ── GPU inference ──────────────────────────────────────────────
+            batch_n  = imgs_gamma_batch.shape[0]
+            masks_np = model.predict(model_input_batch, verbose=0)  # (B,H,W,1)
+            imgs_np  = imgs_gamma_batch.numpy()                     # (B,H,W,3) uint8
+
+            # ── Dispatch post-processing for each image in the batch ───────
+            for i in range(batch_n):
+                dst = dst_paths[processed + i]
+                future = pool.submit(
+                    save_roi,
+                    imgs_np[i],
+                    masks_np[i],
+                    dst,
+                    final_size,
+                    jpeg_quality,
+                )
+                pending_futures[future] = dst
+
+            processed += batch_n
+
+            # ── Non-blocking sweep: collect any futures that finished ───────
+            still_pending: dict = {}
+            for future, dst in pending_futures.items():
+                if future.done():
+                    ok = future.result()
+                    if ok:
+                        ckpt_f.write(dst.name + "\n")
+                        ckpt_f.flush()
+                    else:
+                        failed_stems.add(dst.stem)
+                    pbar.update(1)
+                else:
+                    still_pending[future] = dst
+            pending_futures = still_pending
+
+        # ── Drain any remaining futures after last batch ───────────────────
+        for future in as_completed(pending_futures):
+            dst = pending_futures[future]
+            ok  = future.result()
+            if ok:
+                ckpt_f.write(dst.name + "\n")
+                ckpt_f.flush()
+            else:
+                failed_stems.add(dst.stem)
+            pbar.update(1)
+
+        pbar.close()
+
+    _write_csv(df, out_dir, split_name, failed_stems)
+
+
+def _write_csv(df: pd.DataFrame, out_dir: Path, split_name: str, failed: set) -> None:
     out_df = df.copy()
     out_df["image_path"] = out_df["image_path"].apply(
         lambda p: "images/" + Path(p).stem + ".jpg"
     )
-    
-    if failed_stems:
+    if failed:
         before = len(out_df)
-        out_df = out_df[~out_df["image_path"].apply(lambda p: Path(p).stem).isin(failed_stems)]
+        out_df = out_df[
+            ~out_df["image_path"].apply(lambda p: Path(p).stem).isin(failed)
+        ]
         print(f"  [{split_name}] dropped {before - len(out_df)} failed images")
 
     out_csv = out_dir / f"{split_name}.csv"
     out_df.to_csv(out_csv, index=False)
-    print(f"  [{split_name}] saved {len(out_df):,} rows -> {out_csv}")
+    print(f"  [{split_name}] saved {len(out_df):,} rows → {out_csv}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────────────────
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--preprocessed_dir", required=True)
-    p.add_argument("--output_dir", default="./data/segmented")
-    p.add_argument("--model_path", required=True)
-    p.add_argument("--gamma", type=float, default=1.5)
-    p.add_argument("--seg_size", type=int, default=512)
-    p.add_argument("--final_size", type=int, default=224) 
-    p.add_argument("--jpeg_quality", type=int, default=95)
-    p.add_argument("--splits", nargs="+", default=["train", "val", "test"])
+    p.add_argument("--output_dir",       default="./data/segmented")
+    p.add_argument("--model_path",       required=True)
+    p.add_argument("--splits",     nargs="+", default=["train", "val", "test"])
+    p.add_argument("--batch_size",   type=int,   default=32)
+    p.add_argument("--num_workers",  type=int,   default=8)
+    p.add_argument("--gamma",        type=float, default=1.5)
+    p.add_argument("--seg_size",     type=int,   default=512)
+    p.add_argument("--final_size",   type=int,   default=224)
+    p.add_argument("--jpeg_quality", type=int,   default=95)
     args = p.parse_args()
 
     prep_dir = Path(args.preprocessed_dir)
-    out_dir = Path(args.output_dir)
+    out_dir  = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "images").mkdir(exist_ok=True)
 
     print(f"Loading model: {args.model_path}")
     model = tf.keras.models.load_model(args.model_path)
+    model.trainable = False          # inference-only mode, saves memory
     gamma_lut = build_gamma_lut(args.gamma)
 
     for split in args.splits:
         csv_path = prep_dir / f"{split}.csv"
-        if csv_path.exists():
-            process_split(csv_path, prep_dir, out_dir, model, gamma_lut, 
-                          args.seg_size, args.jpeg_quality, args.final_size)
+        if not csv_path.exists():
+            print(f"  [skip] {csv_path} not found")
+            continue
+        print(f"\n── {split} ──────────────────────────────────────────────")
+        checkpoint_file = out_dir / f".{split}_done.txt"
+        process_split(
+            csv_path        = csv_path,
+            prep_dir        = prep_dir,
+            out_dir         = out_dir,
+            model           = model,
+            gamma_lut       = gamma_lut,
+            seg_size        = args.seg_size,
+            final_size      = args.final_size,
+            batch_size      = args.batch_size,
+            jpeg_quality    = args.jpeg_quality,
+            num_workers     = args.num_workers,
+            checkpoint_file = checkpoint_file,
+        )
 
     print("\nDone.")
+
 
 if __name__ == "__main__":
     main()
