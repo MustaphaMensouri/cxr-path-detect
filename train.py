@@ -35,6 +35,7 @@ def train(cfg: DictConfig):
             EarlyStopping(monitor="val/auc",   mode="max", patience=5),
             TQDMProgressBar(refresh_rate=50),
         ],
+        gradient_clip_val=1.0,
     )
 
     trainer.fit(model, dm)
