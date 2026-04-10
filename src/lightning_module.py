@@ -11,8 +11,8 @@ class WeightedBCELoss(nn.Module):
         N = (1 - targets).sum(dim=0).clamp(min=1)
         total = P + N
 
-        beta_p = total / P
-        beta_n = total / N
+        beta_p = (total / P).clamp(max=10.0)
+        beta_n = (total / N).clamp(max=10.0)
 
         probs = torch.sigmoid(logits).clamp(1e-7, 1 - 1e-7)
 
