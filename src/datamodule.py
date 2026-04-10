@@ -36,7 +36,7 @@ class XrayDataModule(L.LightningDataModule):
         super().__init__()
         self.cfg      = cfg
         self.train_tf = transforms.Compose([
-            transforms.Resize((320, 320)),
+            transforms.Resize((370, 370)),
             transforms.RandomCrop(320),
             transforms.RandomAffine(degrees=7, translate=(0.05, 0.05), scale=(0.95, 1.05)),
             transforms.RandomAutocontrast(p=0.3),
@@ -44,7 +44,7 @@ class XrayDataModule(L.LightningDataModule):
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])
         self.val_tf   = transforms.Compose([
-            transforms.Resize((320, 320)),
+            transforms.Resize((370, 370)),
             transforms.CenterCrop(320),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),

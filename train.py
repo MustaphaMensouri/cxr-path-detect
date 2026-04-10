@@ -1,9 +1,9 @@
 import hydra
 import wandb
 import lightning as L
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar
+from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar, LearningRateMonitor
 from lightning.pytorch.loggers import WandbLogger
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from src.datamodule import XrayDataModule, LABELS
 from src.lightning_module import XrayClassifier
@@ -14,11 +14,37 @@ torch.serialization.add_safe_globals([DictConfig])
 
 @hydra.main(config_path="configs", config_name="config", version_base=None)
 def train(cfg: DictConfig):
-    L.seed_everything(42)
+    L.seed_everything(42, workers=True)
 
     dm     = XrayDataModule(cfg.data)
     model  = XrayClassifier(cfg.model, num_classes=len(LABELS), max_epochs=cfg.train.max_epochs, class_names=LABELS)
-    logger = WandbLogger(project=cfg.wandb.project, name=cfg.wandb.name)
+    api = wandb.Api()
+    try:
+        runs = api.runs(f"{cfg.wandb.entity}/{cfg.wandb.project}")
+        run_number = len(runs) + 1
+    except Exception:
+        run_number = 1
+
+    run_name = f"experiment_{run_number}"
+    logger = WandbLogger(project=cfg.wandb.project, name=run_name, notes=cfg.wandb.notes, tags=list(cfg.wandb.tags), log_model=True, config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
+    callbacks = [
+        ModelCheckpoint(
+            monitor="val/auc",
+            mode="max",
+            save_top_k=1,
+            filename="best",
+            verbose=True,         # prints when a new best is saved
+        ),
+        EarlyStopping(
+            monitor="val/auc",
+            mode="max",
+            patience=cfg.train.get("early_stopping_patience", 10),  # from config, not hardcoded
+            min_delta=1e-4,       # ignore improvements
+            verbose=True,
+        ),
+        LearningRateMonitor(logging_interval="epoch"),   # see LR curve in wandb
+        TQDMProgressBar(refresh_rate=50),
+    ]
 
     trainer = L.Trainer(
         max_epochs=cfg.train.max_epochs,
@@ -30,12 +56,10 @@ def train(cfg: DictConfig):
         enable_progress_bar=cfg.train.enable_progress_bar,
         enable_model_summary=cfg.train.enable_model_summary,
         logger=logger,
-        callbacks=[
-            ModelCheckpoint(monitor="val/auc", mode="max", save_top_k=1, filename="best"),
-            EarlyStopping(monitor="val/auc",   mode="max", patience=5),
-            TQDMProgressBar(refresh_rate=50),
-        ],
+        callbacks=callbacks,
         gradient_clip_val=1.0,
+        gradient_clip_algorithm="norm",
+        num_sanity_val_steps=2,
     )
 
     trainer.fit(model, dm)

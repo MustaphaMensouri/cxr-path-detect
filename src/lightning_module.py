@@ -6,19 +6,7 @@ import lightning as L
 
 
 class WeightedBCELoss(nn.Module):
-    """
-    Weighted Cross-Entropy Loss from ChestX-ray8 paper (Wang et al., 2017).
-    
-    For each class c in a batch:
-        L = βP * Σ(yc=1) [-log f(xc)] + βN * Σ(yc=0) [-log(1 - f(xc))]
-    
-    where:
-        βP = (|P| + |N|) / |P|
-        βN = (|P| + |N|) / |N|
-    and |P|, |N| are the number of 1s and 0s in the batch labels.
-    """
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        # logits, targets: [B, C]  (raw scores, float labels 0/1)
         
         P = targets.sum(dim=0).clamp(min=1)          # positive count per class [C]
         N = (1 - targets).sum(dim=0).clamp(min=1)    # negative count per class [C]
@@ -46,7 +34,7 @@ class XrayClassifier(L.LightningModule):
         self.class_names = class_names
 
         backbone    = getattr(models, cfg.backbone)(weights="DEFAULT" if cfg.pretrained else None)
-        backbone.fc = nn.Linear(backbone.fc.in_features, num_classes)
+        backbone.classifier = nn.Linear(backbone.classifier.in_features, num_classes)
         self.model  = backbone
 
         self.loss = WeightedBCELoss()
