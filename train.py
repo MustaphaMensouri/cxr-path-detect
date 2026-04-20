@@ -3,7 +3,7 @@ import wandb
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar
 from lightning.pytorch.loggers import WandbLogger
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from src.datamodule import XrayDataModule, LABELS
 from src.lightning_module import XrayClassifier
