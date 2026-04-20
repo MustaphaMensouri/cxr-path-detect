@@ -112,11 +112,17 @@ class XrayClassifier(L.LightningModule):
             metrics[f"{stage}/auc/{name}"]       = auc[i]
  
         # sync_dist=False: state was already synced by torchmetrics internally
-        self.log_dict(metrics, prog_bar=False, on_epoch=True, sync_dist=False)
+        self.log_dict(metrics, prog_bar=False, on_epoch=True, sync_dist=True)
 
     def training_step(self, batch, _):   return self._step(batch, "train")
     def validation_step(self, batch, _): return self._step(batch, "val")
     def test_step(self, batch, _):       return self._step(batch, "test")
+
+    def on_validation_epoch_start(self):
+        self.val_precision.reset()
+        self.val_recall.reset()
+        self.val_f1.reset()
+        self.val_perclass_auc.reset()
 
     def on_validation_epoch_end(self):
         self._log_perclass_metrics("val")
