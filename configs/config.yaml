@@ -14,5 +14,10 @@ train:
   enable_model_summary: false
 
 wandb:
-  project: cxr-lung-path
+  project: cxr-multi-label 
   name: null   # auto-generated
+  entity: mustaphamensouri
+  notes: "baseline run"             
+  tags:
+    - baseline
+    - densnet121
