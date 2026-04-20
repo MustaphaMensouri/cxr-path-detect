@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torchvision import models
-from torchmetrics import AUROC, AveragePrecision
+from torchmetrics import AUROC, AveragePrecision, Precision, Recall, F1Score
 import lightning as L
 
 
