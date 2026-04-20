@@ -30,14 +30,14 @@ def train(cfg: DictConfig):
     
     callbacks = [
         ModelCheckpoint(
-            monitor="val/auc",
+            monitor="val/auc_macro",
             mode="max",
             save_top_k=1,
             filename="best",
             verbose=True,   
         ),
         EarlyStopping(
-            monitor="val/auc",
+            monitor="val/auc_macro",
             mode="max",
             patience=cfg.train.get("early_stopping_patience", 3),  # from config, not hardcoded
             min_delta=1e-4,       # ignore improvements
@@ -57,6 +57,7 @@ def train(cfg: DictConfig):
         enable_model_summary=cfg.train.enable_model_summary,
         logger=logger,
         callbacks= callbacks,
+        gradient_clip_val=1.0,
         gradient_clip_algorithm="norm",
         num_sanity_val_steps=2,
     )
