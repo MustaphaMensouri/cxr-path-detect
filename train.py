@@ -40,7 +40,7 @@ def train(cfg: DictConfig):
             monitor="val/auc_macro",
             mode="max",
             patience=cfg.train.get("early_stopping_patience", 3),  # from config, not hardcoded
-            min_delta=1e-4,       # ignore improvements
+            min_delta=1e-3,       # ignore improvements
             verbose=True,
         ),
         LearningRateMonitor(logging_interval="epoch"),   # see LR curve in wandb
