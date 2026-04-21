@@ -7,33 +7,18 @@ import lightning as L
 import torch.nn.functional as F
 
 class FocalLoss(nn.Module):
-    def __init__(self, alpha=1, gamma=2):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
+    def __init__(self, gamma: float = 2.0, alpha: float = 1.0):
+        super().__init__()
         self.gamma = gamma
-
-    def forward(self, logits, targets):
-        # Flatten the tensors for multi-label calculation
-        logits = logits.view(-1)
-        targets = targets.view(-1)
-        
-        # Calculate standard Binary Cross Entropy
-        bce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
-        
-        # Get probability of the positive class
-        p = torch.sigmoid(logits)
-        
-        # p_t is the probability associated with the true label (targets)
-        p_t = p * targets + (1 - p) * (1 - targets)
-        
-        # Calculate the focal component: (1 - p_t)^gamma
-        focal_weight = (1 - p_t) ** self.gamma
-        
-        # Combine everything
-        loss = self.alpha * focal_weight * bce_loss
-        
-        return loss.mean()
-
+        self.alpha = alpha
+ 
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # logits, targets: [B, C]
+        probs = torch.sigmoid(logits).clamp(1e-7, 1 - 1e-7)
+        bce   = -(targets * torch.log(probs) + (1 - targets) * torch.log(1 - probs))
+        pt    = targets * probs + (1 - targets) * (1 - probs)   # prob of correct class
+        focal = self.alpha * ((1 - pt) ** self.gamma) * bce
+        return focal.mean()
 
 class XrayClassifier(L.LightningModule):
     def __init__(self, cfg, num_classes: int, max_epochs: int, class_names: list[str]):
@@ -48,7 +33,10 @@ class XrayClassifier(L.LightningModule):
         backbone.classifier = nn.Linear(backbone.classifier.in_features, num_classes)
         self.model  = backbone
 
-        self.loss = FocalLoss()
+        self.loss = FocalLoss(
+            gamma=getattr(cfg, "focal_gamma", 2.0),
+            alpha=getattr(cfg, "focal_alpha", 1.0),
+        )
 
         self.train_auc = AUROC(task="multilabel", num_labels=num_classes)
         self.val_auc   = AUROC(task="multilabel", num_labels=num_classes)
@@ -64,6 +52,9 @@ class XrayClassifier(L.LightningModule):
         self.test_f1        = F1Score(**metric_kwargs)
         self.test_perclass_auc = AUROC(task="multilabel", num_labels=num_classes, average="none")
 
+        # Per-class thresholds — start at 0.5, tuned after validation # Per-class thresholds — start at 0.5, tuned after validation
+        self.register_buffer("thresholds", torch.full((num_classes,), 0.5))
+
     def forward(self, x):
         return self.model(x)
 
@@ -74,15 +65,18 @@ class XrayClassifier(L.LightningModule):
         probs   = torch.sigmoid(logits)
         y_int  = y.int()
         if stage == "train":
-            auc = self.train_auc(probs, y_int)
+            self.train_auc(probs, y_int)
+            auc = self.train_auc.compute()
         elif stage == "val":
-            auc = self.val_auc(probs, y_int)
+            self.val_auc(probs, y_int)
+            auc = self.val_auc.compute()
             self.val_precision.update(probs, y_int)
             self.val_recall.update(probs, y_int)
             self.val_f1.update(probs, y_int)
             self.val_perclass_auc.update(probs, y_int)
-        else:  # test
-            auc = self.test_auc(probs, y_int)
+        else:
+            self.test_auc(probs, y_int)
+            auc = self.test_auc.compute()
             self.test_precision.update(probs, y_int)
             self.test_recall.update(probs, y_int)
             self.test_f1.update(probs, y_int)
@@ -127,19 +121,39 @@ class XrayClassifier(L.LightningModule):
     def validation_step(self, batch, _): return self._step(batch, "val")
     def test_step(self, batch, _):       return self._step(batch, "test")
 
+    def on_train_epoch_start(self):
+        self.train_auc.reset()
+    
     def on_validation_epoch_start(self):
-        self.val_precision.reset()
-        self.val_recall.reset()
-        self.val_f1.reset()
-        self.val_perclass_auc.reset()
+        self.val_auc.reset()
+        self.val_precision.reset(); self.val_recall.reset()
+        self.val_f1.reset();        self.val_perclass_auc.reset()
 
     def on_validation_epoch_end(self):
         self._log_perclass_metrics("val")
  
     def on_test_epoch_end(self):
         self._log_perclass_metrics("test")
+    
+        # ── Threshold tuning (call after training, before test) ──────────────────
+    def set_thresholds(self, t: np.ndarray):
+        """Set per-class F1 thresholds found by optimize_thresholds()."""
+        self.thresholds = torch.tensor(t, dtype=torch.float32)
 
     def configure_optimizers(self):
-        opt       = torch.optim.AdamW(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.max_epochs)
-        return {"optimizer": opt, "lr_scheduler": scheduler}
+        opt = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.cfg.lr,
+            weight_decay=self.cfg.weight_decay,
+        )
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, mode="min", factor=0.5, patience=3, min_lr=1e-7,
+        )
+        return {
+            "optimizer": opt,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "monitor":   "val/loss",
+                "interval":  "epoch",
+            },
+        }

@@ -7,7 +7,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from src.datamodule import XrayDataModule, LABELS
 from src.lightning_module import XrayClassifier
-
+from src.tune_thresholds import optimize_thresholds
 
 
 
@@ -40,7 +40,7 @@ def train(cfg: DictConfig):
             monitor="val/auc_macro",
             mode="max",
             patience=cfg.train.get("early_stopping_patience", 3),  # from config, not hardcoded
-            min_delta=1e-4,       # ignore improvements
+            min_delta=1e-3,       # ignore improvements
             verbose=True,
         ),
         LearningRateMonitor(logging_interval="epoch"),   # see LR curve in wandb
@@ -63,6 +63,18 @@ def train(cfg: DictConfig):
     )
 
     trainer.fit(model, dm)
+
+    device = "cuda" if cfg.train.accelerator == "gpu" else "cpu"
+    best_thresholds = optimize_thresholds(model, dm.val_dataloader(), device=device)
+    model.set_thresholds(best_thresholds)
+    
+    threshold_dict = {
+        f"threshold/{name}": float(best_thresholds[i])
+        for i, name in enumerate(LABELS)
+    }
+    wandb.log(threshold_dict)
+ 
+    # ── Test with tuned thresholds ─────────────────────────────────────────────
     trainer.test(model, dm, ckpt_path="best")
     wandb.finish()
 
