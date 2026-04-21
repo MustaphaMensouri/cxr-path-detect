@@ -1,29 +1,38 @@
 import torch
 import torch.nn as nn
 from torchvision import models
-from torchmetrics import AUROC, AveragePrecision, Precision, Recall, F1Score
+from torchmetrics import AUROC, Precision, Recall, F1Score
 import lightning as L
 
+import torch.nn.functional as F
 
-class WeightedBCELoss(nn.Module):
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        # logits, targets: [B, C]  (raw scores, float labels 0/1)
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, logits, targets):
+        # Flatten the tensors for multi-label calculation
+        logits = logits.view(-1)
+        targets = targets.view(-1)
         
-        P = targets.sum(dim=0).clamp(min=1)          # positive count per class [C]
-        N = (1 - targets).sum(dim=0).clamp(min=1)    # negative count per class [C]
-        total = P + N                                 # = batch_size
-
-        beta_p = total / P   # [C]
-        beta_n = total / N   # [C]
-
-        # Numerically stable BCE
-        probs = torch.sigmoid(logits)
-        probs = probs.clamp(1e-7, 1 - 1e-7)
-
-        pos_loss = -beta_p * targets       * torch.log(probs)
-        neg_loss = -beta_n * (1 - targets) * torch.log(1 - probs)
-
-        return (pos_loss + neg_loss).mean()
+        # Calculate standard Binary Cross Entropy
+        bce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+        
+        # Get probability of the positive class
+        p = torch.sigmoid(logits)
+        
+        # p_t is the probability associated with the true label (targets)
+        p_t = p * targets + (1 - p) * (1 - targets)
+        
+        # Calculate the focal component: (1 - p_t)^gamma
+        focal_weight = (1 - p_t) ** self.gamma
+        
+        # Combine everything
+        loss = self.alpha * focal_weight * bce_loss
+        
+        return loss.mean()
 
 
 class XrayClassifier(L.LightningModule):
@@ -39,7 +48,7 @@ class XrayClassifier(L.LightningModule):
         backbone.classifier = nn.Linear(backbone.classifier.in_features, num_classes)
         self.model  = backbone
 
-        self.loss = WeightedBCELoss()
+        self.loss = FocalLoss()
 
         self.train_auc = AUROC(task="multilabel", num_labels=num_classes)
         self.val_auc   = AUROC(task="multilabel", num_labels=num_classes)
