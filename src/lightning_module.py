@@ -118,7 +118,11 @@ class XrayClassifier(L.LightningModule):
     def validation_step(self, batch, _): return self._step(batch, "val")
     def test_step(self, batch, _):       return self._step(batch, "test")
 
+    def on_train_epoch_start(self):
+        self.train_auc.reset()
+
     def on_validation_epoch_start(self):
+        self.val_auc.reset()
         self.val_precision.reset()
         self.val_recall.reset()
         self.val_f1.reset()
