@@ -63,18 +63,16 @@ def train(cfg: DictConfig):
     )
 
     trainer.fit(model, dm)
-
-    device = "cuda" if cfg.train.accelerator == "gpu" else "cpu"
-    best_thresholds = optimize_thresholds(model, dm.val_dataloader(), device=device)
+    device = next(model.parameters()).device
+    best_thresholds = optimize_thresholds(model, dm.val_dataloader(), device=str(device))
     model.set_thresholds(best_thresholds)
-    
+ 
+    # Log chosen thresholds to W&B for reproducibility
     threshold_dict = {
         f"threshold/{name}": float(best_thresholds[i])
         for i, name in enumerate(LABELS)
     }
     wandb.log(threshold_dict)
- 
-    # ── Test with tuned thresholds ─────────────────────────────────────────────
     trainer.test(model, dm, ckpt_path="best")
     wandb.finish()
 
