@@ -45,7 +45,7 @@ def train(cfg: DictConfig):
         ),
         LearningRateMonitor(logging_interval="epoch"),   # see LR curve in wandb
         TQDMProgressBar(refresh_rate=50),
-        ThresholdTuner(dm.val_dataloader()),
+        ThresholdTuner(dm.val_dataset),
     ]
     trainer = L.Trainer(
         max_epochs=cfg.train.max_epochs,

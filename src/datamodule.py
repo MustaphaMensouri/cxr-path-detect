@@ -53,6 +53,8 @@ class XrayDataModule(L.LightningDataModule):
 
     def _loader(self, split, transform, shuffle=False):
         ds = XrayDataset(f"{self.cfg.data_dir}/{split}.csv", self.cfg.data_dir, transform)
+        if split == "val":
+            self.val_dataset = ds
         return DataLoader(
             ds,
             batch_size=self.cfg.batch_size,
