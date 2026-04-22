@@ -7,12 +7,14 @@ import lightning as L
 
 
 class ThresholdTuner(L.Callback):
-
-    def __init__(self, val_dataset, search_range: np.ndarray = np.arange(0.05, 0.95, 0.01)):
-        self.val_dataset  = val_dataset   # Dataset, not DataLoader
+    def __init__(self, dm, search_range=np.arange(0.05, 0.95, 0.01)):
+        self.dm = dm
         self.search_range = search_range
 
-    def on_fit_end(self, trainer: L.Trainer, pl_module: L.LightningModule):
+    def on_fit_end(self, trainer, pl_module):
+        val_dataset = self.dm.val_dataset
+        if val_dataset is None:
+            raise RuntimeError("val_dataset is None — val_dataloader was never called.")
         num_classes = pl_module.num_classes
         device      = pl_module.device
         t = torch.zeros(num_classes, dtype=torch.float32, device=device)
@@ -20,7 +22,7 @@ class ThresholdTuner(L.Callback):
         if not dist.is_initialized() or dist.get_rank() == 0:
             # Single-process loader — no DDP sampler, no cross-rank sync needed
             loader = DataLoader(
-                self.val_dataset,
+                val_dataset,
                 batch_size=64,
                 shuffle=False,
                 num_workers=4,
@@ -41,7 +43,7 @@ class ThresholdTuner(L.Callback):
             best = np.array([
                 max(
                     self.search_range,
-                    key=lambda th: f1_score(
+                    key=lambda th, c=c: f1_score(
                         labels[:, c].astype(int),
                         (probs[:, c] >= th).astype(int),
                         zero_division=0,

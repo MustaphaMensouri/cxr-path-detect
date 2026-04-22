@@ -35,6 +35,7 @@ class XrayDataModule(L.LightningDataModule):
     def __init__(self, cfg):
         super().__init__()
         self.cfg      = cfg
+        self.val_dataset = None
         self.train_tf = transforms.Compose([
             transforms.Resize(256),
             transforms.RandomResizedCrop(224),
