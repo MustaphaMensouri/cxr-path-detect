@@ -63,11 +63,9 @@ def train(cfg: DictConfig):
     )
 
     trainer.fit(model, dm)
-    device = next(model.parameters()).device
-    best_thresholds = optimize_thresholds(model, dm.val_dataloader(), device=str(device))
+    best_thresholds = optimize_thresholds(model, dm.val_dataloader())
     model.set_thresholds(best_thresholds)
  
-    # Log chosen thresholds to W&B for reproducibility
     threshold_dict = {
         f"threshold/{name}": float(best_thresholds[i])
         for i, name in enumerate(LABELS)
