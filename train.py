@@ -7,7 +7,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from src.datamodule import XrayDataModule, LABELS
 from src.lightning_module import XrayClassifier
-from src.tune_thresholds import optimize_thresholds
+from src.tune_thresholds import ThresholdTuner
 
 
 
@@ -45,6 +45,7 @@ def train(cfg: DictConfig):
         ),
         LearningRateMonitor(logging_interval="epoch"),   # see LR curve in wandb
         TQDMProgressBar(refresh_rate=50),
+        ThresholdTuner(dm.val_dataloader()),
     ]
     trainer = L.Trainer(
         max_epochs=cfg.train.max_epochs,
@@ -63,14 +64,6 @@ def train(cfg: DictConfig):
     )
 
     trainer.fit(model, dm)
-    best_thresholds = optimize_thresholds(model, dm.val_dataloader())
-    model.set_thresholds(best_thresholds)
- 
-    threshold_dict = {
-        f"threshold/{name}": float(best_thresholds[i])
-        for i, name in enumerate(LABELS)
-    }
-    wandb.log(threshold_dict)
     trainer.test(model, dm, ckpt_path="best")
     wandb.finish()
 
