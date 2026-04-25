@@ -60,11 +60,12 @@ class XrayClassifier(L.LightningModule):
         return self.model(x)
 
     def _step(self, batch, stage):
-        x, y    = batch
-        logits  = self(x)
-        loss    = self.loss(logits, y)
-        probs   = torch.sigmoid(logits)
+        x, y   = batch
+        logits = self(x)
+        loss   = self.loss(logits, y)
+        probs  = torch.sigmoid(logits)
         y_int  = y.int()
+
         if stage == "train":
             self.train_auc(probs, y_int)
             auc = self.train_auc.compute()
@@ -75,14 +76,15 @@ class XrayClassifier(L.LightningModule):
             self.val_recall.update(probs, y_int)
             self.val_f1.update(probs, y_int)
             self.val_perclass_auc.update(probs, y_int)
-        else:
-            self.test_auc(probs, y_int)
+        else:  # test — apply tuned thresholds here
+            preds = (probs >= self.thresholds.to(probs.device)).int()  # ← binary preds
+            self.test_auc(probs, y_int)           # AUC still uses probabilities
             auc = self.test_auc.compute()
-            self.test_precision.update(probs, y_int)
-            self.test_recall.update(probs, y_int)
-            self.test_f1.update(probs, y_int)
+            self.test_precision.update(preds, y_int)   # F1/P/R use binary preds
+            self.test_recall.update(preds, y_int)
+            self.test_f1.update(preds, y_int)
             self.test_perclass_auc.update(probs, y_int)
- 
+
         self.log_dict(
             {f"{stage}/loss": loss, f"{stage}/auc_macro": auc},
             prog_bar=True, on_step=False, on_epoch=True, sync_dist=True,
