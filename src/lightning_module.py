@@ -138,8 +138,7 @@ class XrayClassifier(L.LightningModule):
     
         # ── Threshold tuning (call after training, before test) ──────────────────
     def set_thresholds(self, t: np.ndarray):
-        """Set per-class F1 thresholds found by optimize_thresholds()."""
-        self.thresholds = torch.tensor(t, dtype=torch.float32)
+        self.thresholds.copy_(torch.tensor(t, dtype=torch.float32))
 
     def configure_optimizers(self):
         opt = torch.optim.AdamW(

@@ -18,59 +18,54 @@ class ThresholdTuner(L.Callback):
             )
 
         num_classes = pl_module.num_classes
-        best = np.full(num_classes, 0.5, dtype=np.float32)  # safe default
+        t = torch.zeros(num_classes, dtype=torch.float32)
 
-        # ── Only rank 0 runs inference ────────────────────────────────────────
+        # ── ALL ranks reach this point ────────────────────────────────────────
+        # Only rank 0 does inference, but the barrier + broadcast below
+        # must be called on every rank simultaneously.
         if trainer.global_rank == 0:
-            device = pl_module.device  # cuda:0 on rank 0
+            device = pl_module.device
 
-            # CRITICAL: num_workers=0 — spawning DataLoader workers inside a
-            # DDP-spawned process causes a deadlock with num_workers > 0.
             loader = DataLoader(
                 val_dataset,
                 batch_size=64,
                 shuffle=False,
-                num_workers=0,
+                num_workers=0,   # must be 0 inside DDP worker process
                 pin_memory=False,
             )
 
-            raw_model = pl_module.model
-            raw_model.eval()
-
+            pl_module.model.eval()
             all_probs, all_labels = [], []
+
             with torch.no_grad():
                 for x, y in loader:
-                    probs = torch.sigmoid(raw_model(x.to(device)))
-                    all_probs.append(probs.cpu().numpy())
-                    all_labels.append(y.numpy())
+                    probs = torch.sigmoid(pl_module.model(x.to(device)))
+                    all_probs.append(probs.cpu())
+                    all_labels.append(y)
 
-            probs_np  = np.concatenate(all_probs)   # [N, C]
-            labels_np = np.concatenate(all_labels)  # [N, C]
+            probs_np  = torch.cat(all_probs).numpy()
+            labels_np = torch.cat(all_labels).numpy()
 
-            best = np.array(
-                [
-                    max(
-                        self.search_range,
-                        key=lambda th, c=c: f1_score(
-                            labels_np[:, c].astype(int),
-                            (probs_np[:, c] >= th).astype(int),
-                            zero_division=0,
-                        ),
-                    )
-                    for c in range(num_classes)
-                ],
-                dtype=np.float32,
-            )
+            best = np.array([
+                max(
+                    self.search_range,
+                    key=lambda th, c=c: f1_score(
+                        labels_np[:, c].astype(int),
+                        (probs_np[:, c] >= th).astype(int),
+                        zero_division=0,
+                    ),
+                )
+                for c in range(num_classes)
+            ], dtype=np.float32)
+
+            t.copy_(torch.tensor(best))
 
             print("\nPer-class F1 thresholds:")
             for name, thr in zip(pl_module.class_names, best):
                 print(f"  {name:25s}: {thr:.2f}")
 
-        # ── Broadcast from rank 0 to all other ranks ─────────────────────────
-        # Use Lightning's strategy API instead of raw dist calls — safer during
-        # on_fit_end when Lightning may be mid-teardown of the process group.
-        t = torch.tensor(best, dtype=torch.float32)
-        trainer.strategy.barrier()                      # sync before broadcast
-        t = trainer.strategy.broadcast(t, src=0)       # rank 0 → all ranks
+        # ── Both ranks participate in these two calls ─────────────────────────
+        trainer.strategy.barrier()            # rank 1 was here all along
+        t = trainer.strategy.broadcast(t, src=0)
 
         pl_module.set_thresholds(t.cpu().numpy())
