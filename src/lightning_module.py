@@ -103,7 +103,7 @@ class XrayClassifier(L.LightningModule):
 
         # compute() + log scalars, then reset
         macro_results = macro.compute()          # keys already have prefix e.g. "val/auc"
-        self.log_dict(macro_results, prog_bar=True, sync_dist=False)
+        self.log_dict(macro_results, prog_bar=True, sync_dist=True)
         macro.reset()
 
         # per-class (val/test only)
@@ -117,7 +117,7 @@ class XrayClassifier(L.LightningModule):
                     self.log(
                         f"{stage}/{metric_name}/{self.class_names[i]}",
                         val,
-                        sync_dist=False,   # torchmetrics already synced state across GPUs
+                        sync_dist=True,   # torchmetrics already synced state across GPUs
                     )
 
     def on_train_epoch_end(self):      self._log_macro_and_per_class("train")
