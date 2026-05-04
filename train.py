@@ -27,15 +27,15 @@ def train(cfg: DictConfig):
 
     run_name = f"experiment_{run_number}"
     logger = WandbLogger(project=cfg.wandb.project, name=run_name, notes=cfg.wandb.notes, tags=list(cfg.wandb.tags), log_model=True, config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
-    
+    checkpoint_cb = ModelCheckpoint(
+        monitor="val/auc_macro",
+        mode="max",
+        save_top_k=1,
+        filename="best",
+        verbose=True,
+    )
     callbacks = [
-        ModelCheckpoint(
-            monitor="val/auc_macro",
-            mode="max",
-            save_top_k=1,
-            filename="best",
-            verbose=True,   
-        ),
+        checkpoint_cb,
         EarlyStopping(
             monitor="val/auc_macro",
             mode="max",
@@ -64,7 +64,28 @@ def train(cfg: DictConfig):
     )
 
     trainer.fit(model, dm)
-    trainer.test(model, dm, ckpt_path="best")
+    if trainer.global_rank == 0:
+        best_ckpt = checkpoint_cb.best_model_path
+
+        test_trainer = L.Trainer(
+            accelerator=cfg.train.accelerator,
+            devices=1,                       # ← single GPU
+            strategy="auto",                 # no DDP
+            precision=cfg.train.precision,
+            logger=logger,                   # same wandb run
+            enable_progress_bar=True,
+            enable_model_summary=False,
+        )
+
+        # Load best weights into a fresh module so thresholds are already set
+        test_model = XrayClassifier.load_from_checkpoint(
+            best_ckpt,
+            cfg=cfg.model,
+        )
+        # Copy tuned thresholds from the trained model
+        test_model.set_thresholds(model.thresholds.cpu().numpy())
+
+        test_trainer.test(test_model, datamodule=dm)
     wandb.finish()
 
 
