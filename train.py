@@ -1,23 +1,67 @@
 import hydra
 import wandb
 import torch
+import numpy as np
+from sklearn.metrics import f1_score
 import lightning as L
-from lightning.pytorch.callbacks import (
-    ModelCheckpoint, EarlyStopping, TQDMProgressBar, LearningRateMonitor
-)
+from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar, LearningRateMonitor
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig, OmegaConf
+from torch.utils.data import DataLoader
+
 from src.datamodule import XrayDataModule, LABELS
 from src.lightning_module import XrayClassifier
-from src.tune_thresholds import ThresholdTuner
-import sys
+
+def tune_thresholds_single_gpu(model, val_dataset, class_names, search_range=np.arange(0.05, 0.95, 0.01)):
+    """
+    Run on rank 0 only, on a single GPU, outside of DDP context.
+    """
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    model.eval()
+
+    loader = DataLoader(
+        val_dataset,
+        batch_size=64,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+    )
+
+    all_probs, all_labels = [], []
+    with torch.no_grad():
+        for x, y in loader:
+            x = x.to(device, non_blocking=True)
+            probs = torch.sigmoid(model(x))
+            all_probs.append(probs.cpu())
+            all_labels.append(y)
+
+    probs_np = torch.cat(all_probs).numpy()
+    labels_np = torch.cat(all_labels).numpy()
+
+    best_thresholds = np.zeros(len(class_names), dtype=np.float32)
+    for c in range(len(class_names)):
+        best_f1 = -1.0
+        best_th = 0.5
+        for th in search_range:
+            preds = (probs_np[:, c] >= th).astype(int)
+            f1 = f1_score(labels_np[:, c].astype(int), preds, zero_division=0)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_th = th
+        best_thresholds[c] = best_th
+
+    print("\nPer-class F1 thresholds:")
+    for name, thr in zip(class_names, best_thresholds):
+        print(f"  {name:25s}: {thr:.2f}")
+
+    return best_thresholds
 
 
 @hydra.main(config_path="configs", config_name="config", version_base=None)
 def train(cfg: DictConfig):
     L.seed_everything(42, workers=True)
-
-    dm    = XrayDataModule(cfg.data)
+    dm = XrayDataModule(cfg.data)
     model = XrayClassifier(
         cfg.model,
         num_classes=len(LABELS),
@@ -25,32 +69,32 @@ def train(cfg: DictConfig):
         class_names=LABELS,
     )
 
+    # WandB setup
+    api = wandb.Api()
     try:
-        api = wandb.Api()
         runs = api.runs(f"{cfg.wandb.entity}/{cfg.wandb.project}")
         run_number = len(runs) + 1
     except Exception:
         run_number = 1
+    run_name = f"experiment_{run_number}"
 
     logger = WandbLogger(
         project=cfg.wandb.project,
-        name=f"experiment_{run_number}",
+        name=run_name,
         notes=cfg.wandb.notes,
         tags=list(cfg.wandb.tags),
         log_model=True,
         config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
     )
 
-    checkpoint_cb = ModelCheckpoint(
-        monitor="val/auc_macro",
-        mode="max",
-        save_top_k=1,
-        filename="best",
-        verbose=True,
-    )
-
     callbacks = [
-        checkpoint_cb,
+        ModelCheckpoint(
+            monitor="val/auc_macro",
+            mode="max",
+            save_top_k=1,
+            filename="best",
+            verbose=True,
+        ),
         EarlyStopping(
             monitor="val/auc_macro",
             mode="max",
@@ -60,7 +104,6 @@ def train(cfg: DictConfig):
         ),
         LearningRateMonitor(logging_interval="epoch"),
         TQDMProgressBar(refresh_rate=50),
-        ThresholdTuner(dm),
     ]
 
     trainer = L.Trainer(
@@ -79,54 +122,50 @@ def train(cfg: DictConfig):
         num_sanity_val_steps=2,
     )
 
-    print(">>> calling trainer.fit()", flush=True)
+    # ── TRAIN & VALIDATE ─────────────────────────────────────────────
     trainer.fit(model, dm)
-    print(">>> trainer.fit() returned", flush=True)
-    sys.stdout.flush()
 
-    # ── single-GPU test, rank 0 only ─────────────────────────────────────────
-    print(f">>> global_rank={trainer.global_rank}, entering test block", flush=True)
-
+    # ── THRESHOLD TUNING (single GPU, rank 0 only) ─────────────────
+    # This runs OUTSIDE the DDP loop, avoiding barrier deadlocks.
     if trainer.global_rank == 0:
-        best_ckpt = checkpoint_cb.best_model_path
-        print(f">>> best checkpoint: {best_ckpt}", flush=True)
+        # Load best checkpoint for threshold tuning
+        best_path = trainer.checkpoint_callback.best_model_path
+        if best_path:
+            ckpt = torch.load(best_path, map_location="cpu")
+            # Load weights into a fresh copy to avoid DDP wrapper issues
+            tune_model = XrayClassifier(
+                cfg.model,
+                num_classes=len(LABELS),
+                max_epochs=cfg.train.max_epochs,
+                class_names=LABELS,
+            )
+            tune_model.load_state_dict(ckpt["state_dict"])
+        else:
+            tune_model = model  # fallback to current weights
 
-        if not best_ckpt:
-            print(">>> WARNING: no checkpoint found, using current weights", flush=True)
-
-        print(">>> building single-GPU test_trainer", flush=True)
-        test_trainer = L.Trainer(
-            accelerator=cfg.train.accelerator,
-            devices=1,
-            strategy="auto",
-            precision=cfg.train.precision,
-            logger=logger,
-            enable_progress_bar=True,
-            enable_model_summary=False,
+        best_thresholds = tune_thresholds_single_gpu(
+            tune_model,
+            dm.val_dataset,
+            LABELS,
         )
-        print(">>> test_trainer built", flush=True)
-
-        print(">>> loading checkpoint into test_model", flush=True)
-        test_model = XrayClassifier.load_from_checkpoint(
-            best_ckpt,
-            cfg=cfg.model,
-        )
-        print(">>> checkpoint loaded", flush=True)
-
-        test_model.set_thresholds(model.thresholds.cpu().numpy())
-        print(f">>> thresholds set: {model.thresholds.cpu().numpy()}", flush=True)
-
-        print(">>> calling test_trainer.test()", flush=True)
-        sys.stdout.flush()
-        test_trainer.test(test_model, datamodule=dm)
-        print(">>> test_trainer.test() returned", flush=True)
-
+        # Save thresholds to a file so all ranks can load them if needed
+        np.save("best_thresholds.npy", best_thresholds)
     else:
-        print(f">>> rank {trainer.global_rank} skipping test block", flush=True)
+        best_thresholds = None
 
-    sys.stdout.flush()
+    # If running DDP, make sure rank 0 has finished writing before test
+    trainer.strategy.barrier()
+
+    # Load thresholds on all ranks
+    if trainer.global_rank != 0:
+        best_thresholds = np.load("best_thresholds.npy")
+
+    model.set_thresholds(best_thresholds)
+
+    # ── TEST ────────────────────────────────────────────────────────
+    trainer.test(model, dm, ckpt_path="best")
+
     wandb.finish()
-    print(">>> wandb.finish() done", flush=True)
 
 
 if __name__ == "__main__":

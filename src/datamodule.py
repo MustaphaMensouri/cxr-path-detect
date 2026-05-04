@@ -12,28 +12,26 @@ LABELS = [
     "Pleural_Thickening", "Pneumonia", "Pneumothorax", "No Finding",
 ]
 
-
 class XrayDataset(Dataset):
     def __init__(self, csv_path, data_dir, transform):
-        self.df        = pd.read_csv(csv_path)
-        self.data_dir  = Path(data_dir)
+        self.df = pd.read_csv(csv_path)
+        self.data_dir = Path(data_dir)
         self.transform = transform
-        self.labels    = [l for l in LABELS if l in self.df.columns]
+        self.labels = [l for l in LABELS if l in self.df.columns]
 
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
-        row   = self.df.iloc[idx]
-        img   = Image.open(self.data_dir / row["image_path"]).convert("RGB")
+        row = self.df.iloc[idx]
+        img = Image.open(self.data_dir / row["image_path"]).convert("RGB")
         label = torch.tensor(row[self.labels].values.astype(float), dtype=torch.float32)
         return self.transform(img), label
-
 
 class XrayDataModule(L.LightningDataModule):
     def __init__(self, cfg):
         super().__init__()
-        self.cfg      = cfg
+        self.cfg = cfg
         self.val_dataset = None
         self.train_tf = transforms.Compose([
             transforms.Resize(256),
@@ -50,27 +48,19 @@ class XrayDataModule(L.LightningDataModule):
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])
 
-    def _loader(self, split: str, transform, shuffle: bool = False) -> DataLoader:
-        ds = XrayDataset(
-            f"{self.cfg.data_dir}/{split}.csv",
-            self.cfg.data_dir,
-            transform,
-        )
+    def _loader(self, split, transform, shuffle=False):
+        ds = XrayDataset(f"{self.cfg.data_dir}/{split}.csv", self.cfg.data_dir, transform)
         if split == "val":
             self.val_dataset = ds
         
-        extra = {}
-        if self.cfg.num_workers > 0:
-            extra["prefetch_factor"]    = self.cfg.prefetch_factor
-            extra["persistent_workers"] = self.cfg.persistent_workers
-
         return DataLoader(
             ds,
             batch_size=self.cfg.batch_size,
             num_workers=self.cfg.num_workers,
             shuffle=shuffle,
             pin_memory=self.cfg.pin_memory,
-            **extra,
+            prefetch_factor=self.cfg.prefetch_factor,
+            persistent_workers=self.cfg.persistent_workers,
         )
 
     def train_dataloader(self): return self._loader("train", self.train_tf, shuffle=True)
