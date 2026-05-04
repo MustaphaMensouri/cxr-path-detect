@@ -6,7 +6,6 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 import lightning as L
 
-
 LABELS = [
     "Atelectasis", "Consolidation", "Edema", "Effusion", "Emphysema",
     "Fibrosis", "Infiltration", "Mass", "Nodule",
@@ -44,7 +43,6 @@ class XrayDataModule(L.LightningDataModule):
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])
- 
         self.val_tf = transforms.Compose([
             transforms.Resize(256),
             transforms.CenterCrop(224),
@@ -52,18 +50,27 @@ class XrayDataModule(L.LightningDataModule):
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])
 
-    def _loader(self, split, transform, shuffle=False):
-        ds = XrayDataset(f"{self.cfg.data_dir}/{split}.csv", self.cfg.data_dir, transform)
+    def _loader(self, split: str, transform, shuffle: bool = False) -> DataLoader:
+        ds = XrayDataset(
+            f"{self.cfg.data_dir}/{split}.csv",
+            self.cfg.data_dir,
+            transform,
+        )
         if split == "val":
             self.val_dataset = ds
+        
+        extra = {}
+        if self.cfg.num_workers > 0:
+            extra["prefetch_factor"]    = self.cfg.prefetch_factor
+            extra["persistent_workers"] = self.cfg.persistent_workers
+
         return DataLoader(
             ds,
             batch_size=self.cfg.batch_size,
             num_workers=self.cfg.num_workers,
             shuffle=shuffle,
             pin_memory=self.cfg.pin_memory,
-            prefetch_factor=self.cfg.prefetch_factor,
-            persistent_workers=self.cfg.persistent_workers,
+            **extra,
         )
 
     def train_dataloader(self): return self._loader("train", self.train_tf, shuffle=True)
