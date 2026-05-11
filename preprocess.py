@@ -172,13 +172,9 @@ def main(
     keep_set = set(keep_labels)
 
     # ── load CSV ──────────────────────────────────────────────────────────
-    csv_candidates = list(data_root.glob("PADCHEST*.csv"))
-    if not csv_candidates:
-        sys.exit(f"ERROR: No PADCHEST CSV found in {data_root}")
-    csv_path = csv_candidates[0]
-    print(f"Loading {csv_path.name} …")
+    csv_path = data_root / "PADCHEST_chest_x_ray_images_labels_160K_01.02.19.csv"
     df = pd.read_csv(csv_path, low_memory=False)
-    print(f"  Raw rows: {len(df):,}")
+    print(f"Rows: {len(df):,}")
 
     # ── drop missing labels ───────────────────────────────────────────────
     df = df[df["Labels"].notna()].copy()
@@ -254,7 +250,6 @@ def main(
 
     # ── resize images ─────────────────────────────────────────────────────
     if not no_resize:
-        print(f"\nIndexing images in {data_root} …")
         src_index = find_image_index(data_root)
         print(f"  Found {len(src_index):,} PNG files on disk.")
 
