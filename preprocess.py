@@ -43,6 +43,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 from tqdm import tqdm
+from sklearn.model_selection import train_test_split
 
 # ─────────────────────────── default label set ────────────────────────────
 DEFAULT_LUNG_LABELS = [
@@ -224,17 +225,64 @@ def main(
     df = df[meta_cols + label_cols].copy()
 
     # ── patient-stratified splits ─────────────────────────────────────────
-    patients = df["PatientID"].unique()
-    rng = np.random.default_rng(seed)
-    rng.shuffle(patients)
+    # ── rarest-label stratified splits ───────────────────────────────────
+    # 1. build a per-patient binary label matrix (patient × label)
+    patient_labels = (
+        df.groupby("PatientID")[label_cols].max()   # 1 if patient ever has that label
+    )
 
-    n      = len(patients)
-    n_val  = int(n * val_split)
-    n_test = int(n * test_split)
+    # 2. compute global label frequency (number of patients with each label)
+    label_freq = patient_labels.sum()               # Series: label → count
 
-    val_patients   = set(patients[:n_val])
-    test_patients  = set(patients[n_val : n_val + n_test])
-    train_patients = set(patients[n_val + n_test:])
+    # 3. assign each patient a stratification key = their rarest label
+    #    patients with no positive label (only normal) get key "normal"
+    def rarest_label_key(row):
+        positive = row[row == 1].index.tolist()
+        if not positive:
+            return "normal"
+        return label_freq[positive].idxmin()        # label with lowest global count
+
+    patient_labels["strat_key"] = patient_labels.apply(rarest_label_key, axis=1)
+
+    # 4. print distribution so you can sanity-check rare labels
+    print("\nStratification key distribution (top 20 rarest):")
+    key_counts = patient_labels["strat_key"].value_counts()
+    print(key_counts.tail(20).to_string())
+
+    # 5. collapse very rare keys (< min_strat_count patients) into "__rare__"
+    #    so sklearn doesn't crash when a class has only 1 or 2 members
+    MIN_STRAT_COUNT = 3
+    rare_keys = key_counts[key_counts < MIN_STRAT_COUNT].index
+    patient_labels["strat_key"] = patient_labels["strat_key"].replace(
+        {k: "__rare__" for k in rare_keys}
+    )
+
+    # 6. stratified train / (val+test) split, then stratified val / test split
+
+    all_patients  = patient_labels.index.to_numpy()
+    strat_keys    = patient_labels["strat_key"].to_numpy()
+    test_split    = round(1.0 - train_split - val_split, 10)
+
+    train_patients, temp_patients, _, temp_keys = train_test_split(
+        all_patients, strat_keys,
+        test_size=val_split + test_split,
+        stratify=strat_keys,
+        random_state=seed,
+    )
+
+    # relative size of test within the temp pool
+    relative_test = test_split / (val_split + test_split)
+
+    val_patients, test_patients, _, _ = train_test_split(
+        temp_patients, temp_keys,
+        test_size=relative_test,
+        stratify=temp_keys,
+        random_state=seed,
+    )
+
+    train_patients = set(train_patients)
+    val_patients   = set(val_patients)
+    test_patients  = set(test_patients)
 
     splits = {
         "train": df[df["PatientID"].isin(train_patients)],
@@ -242,11 +290,19 @@ def main(
         "test":  df[df["PatientID"].isin(test_patients)],
     }
 
+    # 7. print split stats with per-label prevalence for verification
     print("\nSplit sizes:")
     for name, sdf in splits.items():
         n_normal = int(sdf["normal"].sum()) if "normal" in sdf.columns else 0
         print(f"  {name:5s}: {len(sdf):>7,} images  |  {sdf['PatientID'].nunique():>5,} patients"
               f"  |  {n_normal:>6,} normal")
+
+    print("\nLabel prevalence across splits (% of images):")
+    header = f"  {'label':<35} {'train':>7}  {'val':>7}  {'test':>7}"
+    print(header)
+    for col in label_cols:
+        row = {n: f"{sdf[col].mean()*100:6.2f}%" for n, sdf in splits.items()}
+        print(f"  {col:<35} {row['train']:>7}  {row['val']:>7}  {row['test']:>7}")
 
     # ── resize images ─────────────────────────────────────────────────────
     if not no_resize:
