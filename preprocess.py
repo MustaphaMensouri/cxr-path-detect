@@ -474,6 +474,39 @@ def prepare_datamart(cfg: Config) -> None:
 
     label_cols = list(label_map.values())
 
+    # REMOVE RARE LABELS
+
+    min_label_count = 20
+
+    label_counts = df[label_cols].sum()
+
+    keep_label_cols = (
+        label_counts[label_counts >= min_label_count]
+        .index
+        .tolist()
+    )
+
+    drop_label_cols = (
+        label_counts[label_counts < min_label_count]
+        .index
+        .tolist()
+    )
+
+    print(f"Keeping {len(keep_label_cols)} labels")
+    print(f"Dropping {len(drop_label_cols)} rare labels")
+
+    if drop_label_cols:
+        print(drop_label_cols)
+
+    label_cols = keep_label_cols
+
+    # remove rows that no longer contain any label
+    before = len(df)
+
+    df = df[df[label_cols].sum(axis=1) > 0].copy()
+
+    print(f"Dropped {before - len(df)} rows with no remaining labels")
+
     meta_cols = [
         "ImageID", "ImageDir", "StudyDate_DICOM", "StudyID", "PatientID",
         "PatientBirth", "PatientSex_DICOM", "Projection", "MethodProjection",
