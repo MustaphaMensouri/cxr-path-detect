@@ -153,6 +153,7 @@ class Config:
     train_split: float
     val_split: float
     seed: int
+    min_label_count: int
     image_size: int
     num_workers: int
     no_resize: bool
@@ -476,7 +477,7 @@ def prepare_datamart(cfg: Config) -> None:
 
     # REMOVE RARE LABELS
 
-    min_label_count = 20
+    min_label_count = cfg.min_label_count
 
     label_counts = df[label_cols].sum()
 
@@ -617,6 +618,7 @@ def parse_args() -> Config:
     p.add_argument("--train-split", type=float, default=0.70)
     p.add_argument("--val-split", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--min_label_count", type=int, default=20, help="Minimum number of positive examples for a label to be kept")
     p.add_argument("--image-size", type=int, default=224)
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--no-resize", action="store_true")
@@ -649,6 +651,7 @@ def parse_args() -> Config:
         drop_exclude=args.drop_exclude,
         drop_suboptimal=args.drop_suboptimal,
         allow_single_split_classes=args.allow_single_split_classes,
+        min_label_count=args.min_label_count,
     )
 
 
