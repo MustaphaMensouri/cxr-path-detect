@@ -84,6 +84,7 @@ import pandas as pd
 from PIL import Image
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
+import cv2
 
 
 PAD_CSV_NAME = "PADCHEST_chest_x_ray_images_labels_160K_01.02.19.csv"
@@ -260,17 +261,38 @@ def build_image_index(data_root: Path) -> dict[str, Path]:
     return index
 
 
-def resize_or_copy_one(task: tuple[Path, Path, int, bool]) -> tuple[str, bool, str | None]:
+def resize_or_copy_one(task):
     src, dst, image_size, copy_original = task
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
         if copy_original:
             shutil.copy2(src, dst)
         else:
-            with Image.open(src) as img:
-                img = img.convert("RGB")
-                img = img.resize((image_size, image_size), Image.Resampling.LANCZOS)
-                img.save(dst, format="JPEG", quality=95)
+            # Read original image preserving bit depth
+            img = cv2.imread(str(src), cv2.IMREAD_ANYDEPTH)
+
+            if img is None:
+                raise ValueError(f"Could not read image: {src}")
+
+            # Convert to float32
+            img = img.astype(np.float32)
+
+            # Normalize to 0-1
+            img = (img - img.min()) / (img.max() - img.min() + 1e-8)
+
+            # Convert to uint8
+            img = (img * 255).astype(np.uint8)
+
+            # Resize
+            img = cv2.resize(
+                img,
+                (image_size, image_size),
+                interpolation=cv2.INTER_AREA
+            )
+
+            # Save JPG
+            cv2.imwrite(str(dst), img)
+
         return src.name, True, None
     except Exception as exc:
         return src.name, False, str(exc)
