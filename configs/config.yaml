@@ -18,8 +18,8 @@ train:
 
 wandb:
   enabled: true
-  project: cxr-lung-path
+  project: lung-pathology-multilabel
   entity: mustaphamensouri
-  notes: "baseline run"             
+  notes: "run baseline on padchest"
   tags:
-    - baseline
+    - padchest

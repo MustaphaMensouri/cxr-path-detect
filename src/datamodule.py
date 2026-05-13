@@ -17,6 +17,10 @@ class XrayDataset(Dataset):
     def __init__(self, csv_path, data_dir, transform, labels, sample_cfg=None):
         self.df = pd.read_csv(csv_path)
 
+        self.data_dir = Path(data_dir)
+        self.transform = transform
+        self.labels = [l for l in labels if l in self.df.columns]
+
         if sample_cfg is not None and sample_cfg.enabled:
             # number of target rows
             target_n = min(sample_cfg.size, len(self.df))
@@ -55,15 +59,6 @@ class XrayDataset(Dataset):
                 self.df[self.df["PatientID"].isin(sample_patient_ids)]
                 .reset_index(drop=True)
             )
-
-            # optional: trim if slightly above target_n
-            if len(self.df) > target_n:
-                self.df = self.df.iloc[:target_n].reset_index(drop=True)
-
-        self.data_dir = Path(data_dir)
-        self.transform = transform
-        self.labels = [l for l in labels if l in self.df.columns]
-
     def __len__(self):
         return len(self.df)
 
