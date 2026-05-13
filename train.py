@@ -37,14 +37,14 @@ def train(cfg: DictConfig):
         print("[Logger] W&B disabled — logging to terminal + CSV (logs/local_run/)")
     callbacks = [
         ModelCheckpoint(
-            monitor="val/auc",
+            monitor="val/auc_macro",
             mode="max",
             save_top_k=1,
             filename="best",
             verbose=True,         # prints when a new best is saved
         ),
         EarlyStopping(
-            monitor="val/auc",
+            monitor="val/auc_macro",
             mode="max",
             patience=cfg.train.get("early_stopping_patience", 10),  # from config, not hardcoded
             min_delta=1e-4,       # ignore improvements

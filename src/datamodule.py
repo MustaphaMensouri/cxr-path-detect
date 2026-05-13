@@ -5,6 +5,7 @@ from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 import lightning as L
 from src.factories import build_transforms
+from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
 
 
 def load_labels(path):
@@ -17,8 +18,47 @@ class XrayDataset(Dataset):
         self.df = pd.read_csv(csv_path)
 
         if sample_cfg is not None and sample_cfg.enabled:
-            n = min(sample_cfg.size, len(self.df))
-            self.df = self.df.sample(n=n, random_state=sample_cfg.seed).reset_index(drop=True)
+            # number of target rows
+            target_n = min(sample_cfg.size, len(self.df))
+
+            # build patient-level multilabel matrix
+            patient_matrix = (
+                self.df.groupby("PatientID", sort=False)[self.labels]
+                .max()
+                .reset_index()
+            )
+
+            # estimate how many patients we need
+            avg_images_per_patient = len(self.df) / len(patient_matrix)
+
+            target_patient_count = max(
+                1,
+                int(target_n / avg_images_per_patient)
+            )
+
+            # multilabel stratified sampling at patient level
+            X = patient_matrix["PatientID"].values
+            y = patient_matrix[self.labels].values
+
+            msss = MultilabelStratifiedShuffleSplit(
+                n_splits=1,
+                train_size=target_patient_count,
+                random_state=sample_cfg.seed,
+            )
+
+            sample_patient_idx, _ = next(msss.split(X, y))
+
+            sample_patient_ids = set(X[sample_patient_idx])
+
+            # keep all images belonging to selected patients
+            self.df = (
+                self.df[self.df["PatientID"].isin(sample_patient_ids)]
+                .reset_index(drop=True)
+            )
+
+            # optional: trim if slightly above target_n
+            if len(self.df) > target_n:
+                self.df = self.df.iloc[:target_n].reset_index(drop=True)
 
         self.data_dir = Path(data_dir)
         self.transform = transform
