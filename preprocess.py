@@ -501,6 +501,11 @@ def prepare_datamart(cfg: Config) -> None:
 
     label_cols = keep_label_cols
 
+    kept_label_map = {
+        label: col for label, col in label_map.items()
+            if col in label_cols
+    }
+
     # remove rows that no longer contain any label
     before = len(df)
 
@@ -595,10 +600,13 @@ def prepare_datamart(cfg: Config) -> None:
 
     # Metadata outputs.
     pd.DataFrame(
-        [{"label": label, "column": col} for label, col in label_map.items()]
+        [{"label": label, "column": col} for label, col in kept_label_map.items()]
     ).to_csv(output_dir / "label_map.csv", index=False)
 
-    Path(output_dir / "labels_used.txt").write_text("\n".join(present_labels), encoding="utf-8")
+    Path(output_dir / "labels_used.txt").write_text(
+        "\n".join(kept_label_map.keys()),
+        encoding="utf-8"
+    )
     Path(output_dir / "config.json").write_text(json.dumps(asdict(cfg), indent=2), encoding="utf-8")
     write_split_report(output_dir, splits, label_cols)
 
@@ -618,7 +626,7 @@ def parse_args() -> Config:
     p.add_argument("--train-split", type=float, default=0.70)
     p.add_argument("--val-split", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--min_label_count", type=int, default=20, help="Minimum number of positive examples for a label to be kept")
+    p.add_argument("--min-label-count", type=int, default=20, help="Minimum number of positive examples for a label to be kept")
     p.add_argument("--image-size", type=int, default=224)
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--no-resize", action="store_true")
