@@ -1,8 +1,13 @@
 data_dir: data/preprocessed
+labels_path: data/preprocessed/labels.txt
 num_workers: 2
 image_size: 224
 batch_size: 64
 pin_memory: true
 prefetch_factor: 4
-
 persistent_workers: true
+
+sample:
+  enabled: false
+  size: 30000
+  seed: 42

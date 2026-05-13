@@ -5,19 +5,21 @@ from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, TQDMProg
 from lightning.pytorch.loggers import WandbLogger, CSVLogger
 from omegaconf import DictConfig, OmegaConf
 
-from src.datamodule import XrayDataModule, LABELS
+from src.datamodule import XrayDataModule
 from src.lightning_module import XrayClassifier
 
 import torch
 torch.serialization.add_safe_globals([DictConfig])
 
 
+
 @hydra.main(config_path="configs", config_name="config", version_base=None)
 def train(cfg: DictConfig):
     L.seed_everything(42, workers=True)
 
-    dm     = XrayDataModule(cfg.data)
-    model  = XrayClassifier(cfg.model, num_classes=len(LABELS), max_epochs=cfg.train.max_epochs, class_names=LABELS)
+    dm     = XrayDataModule(cfg)
+    class_names=dm.labels
+    model  = XrayClassifier(cfg, num_classes=len(class_names), class_names=class_names, max_epochs=cfg.train.max_epochs)
     use_wandb = cfg.wandb.get("enabled", True)
 
     if use_wandb:
@@ -69,7 +71,8 @@ def train(cfg: DictConfig):
     )
 
     trainer.fit(model, dm)
-    trainer.test(model, dm, ckpt_path="best")
+    if cfg.train.get("run_test", False):
+        trainer.test(model, dm, ckpt_path="best")
     if use_wandb:
         wandb.finish()
 

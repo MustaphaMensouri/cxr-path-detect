@@ -1,6 +1,8 @@
 defaults:
   - data: default
   - model: default
+  - loss: weighted_bce
+  - augmentation: light
   - _self_
 
 train:
@@ -12,13 +14,12 @@ train:
   log_every_n_steps: 50
   enable_progress_bar: true
   enable_model_summary: true
+  run_test: false
 
 wandb:
   enabled: true
   project: cxr-lung-path
-  name: Null
   entity: mustaphamensouri
   notes: "baseline run"             
   tags:
     - baseline
-    - densenet121

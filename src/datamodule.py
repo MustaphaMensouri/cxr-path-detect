@@ -3,23 +3,26 @@ import pandas as pd
 from pathlib import Path
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
 import lightning as L
+from src.factories import build_transforms
 
 
-LABELS = [
-    "Atelectasis", "Consolidation", "Edema", "Effusion", "Emphysema",
-    "Fibrosis", "Infiltration", "Mass", "Nodule",
-    "Pleural_Thickening", "Pneumonia", "Pneumothorax", "No Finding",
-]
+def load_labels(path):
+    with open(path) as f:
+        return [line.strip() for line in f if line.strip()]
 
 
 class XrayDataset(Dataset):
-    def __init__(self, csv_path, data_dir, transform):
-        self.df        = pd.read_csv(csv_path)
-        self.data_dir  = Path(data_dir)
+    def __init__(self, csv_path, data_dir, transform, labels, sample_cfg=None):
+        self.df = pd.read_csv(csv_path)
+
+        if sample_cfg is not None and sample_cfg.enabled:
+            n = min(sample_cfg.size, len(self.df))
+            self.df = self.df.sample(n=n, random_state=sample_cfg.seed).reset_index(drop=True)
+
+        self.data_dir = Path(data_dir)
         self.transform = transform
-        self.labels    = [l for l in LABELS if l in self.df.columns]
+        self.labels = [l for l in labels if l in self.df.columns]
 
     def __len__(self):
         return len(self.df)
@@ -35,31 +38,27 @@ class XrayDataModule(L.LightningDataModule):
     def __init__(self, cfg):
         super().__init__()
         self.cfg      = cfg
-        self.train_tf = transforms.Compose([
-            transforms.Resize((370, 370)),
-            transforms.RandomCrop(320),
-            transforms.RandomAffine(degrees=7, translate=(0.05, 0.05), scale=(0.95, 1.05)),
-            transforms.RandomAutocontrast(p=0.3),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ])
-        self.val_tf   = transforms.Compose([
-            transforms.Resize((370, 370)),
-            transforms.CenterCrop(320),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ])
+        self.train_tf, self.val_tf = build_transforms(cfg.augmentation)
+        self.labels = load_labels(self.cfg.data.labels_path)
 
     def _loader(self, split, transform, shuffle=False):
-        ds = XrayDataset(f"{self.cfg.data_dir}/{split}.csv", self.cfg.data_dir, transform)
+        sample_cfg = self.cfg.data.sample if split == "train" else None
+
+        ds = XrayDataset(
+            f"{self.cfg.data.data_dir}/{split}.csv",
+            self.cfg.data.data_dir,
+            transform,
+            labels=self.labels,
+            sample_cfg=sample_cfg,
+        )
         return DataLoader(
             ds,
-            batch_size=self.cfg.batch_size,
-            num_workers=self.cfg.num_workers,
+            batch_size=self.cfg.data.batch_size,
+            num_workers=self.cfg.data.num_workers,
             shuffle=shuffle,
-            pin_memory=self.cfg.pin_memory,
-            prefetch_factor=self.cfg.prefetch_factor,
-            persistent_workers=self.cfg.persistent_workers,
+            pin_memory=self.cfg.data.pin_memory,
+            prefetch_factor=self.cfg.data.prefetch_factor,
+            persistent_workers=self.cfg.data.persistent_workers,
         )
 
     def train_dataloader(self): return self._loader("train", self.train_tf, shuffle=True)

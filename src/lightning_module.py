@@ -3,24 +3,7 @@ import torch.nn as nn
 from torchvision import models
 from torchmetrics import AUROC, Accuracy, Recall, F1Score, MetricCollection
 import lightning as L
-
-
-class WeightedBCELoss(nn.Module):
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        P = targets.sum(dim=0).clamp(min=1)
-        N = (1 - targets).sum(dim=0).clamp(min=1)
-        total = P + N
-
-        beta_p = (total / P).clamp(max=10.0)
-        beta_n = (total / N).clamp(max=10.0)
-
-        probs = torch.sigmoid(logits).clamp(1e-7, 1 - 1e-7)
-
-        pos_loss = -beta_p * targets       * torch.log(probs)
-        neg_loss = -beta_n * (1 - targets) * torch.log(1 - probs)
-
-        return (pos_loss + neg_loss).mean()
-
+from src.factories import build_backbone, build_loss
 
 class XrayClassifier(L.LightningModule):
     def __init__(self, cfg, num_classes, max_epochs, class_names=None):
@@ -31,11 +14,8 @@ class XrayClassifier(L.LightningModule):
         self.class_names = class_names or [f"class_{i}" for i in range(num_classes)]
 
         # ── backbone ──────────────────────────────────────────────────────────
-        backbone = getattr(models, cfg.backbone)(weights="DEFAULT" if cfg.pretrained else None)
-        backbone.classifier = nn.Linear(backbone.classifier.in_features, num_classes)
-        self.model = backbone
-
-        self.loss = WeightedBCELoss()
+        self.model = build_backbone(cfg.model, num_classes)
+        self.loss = build_loss(cfg.loss)
 
         # ── metrics ───────────────────────────────────────────────────────────
         # average="macro" aggregates across classes internally inside torchmetrics,
