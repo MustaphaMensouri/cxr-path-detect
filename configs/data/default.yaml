@@ -11,3 +11,4 @@ sample:
   enabled: false
   size: 30000
   seed: 42
+  rare_threshold: 500
