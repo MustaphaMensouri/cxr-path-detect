@@ -1,5 +1,5 @@
 import torch
-from torchmetrics import AUROC, Recall, Precision, F1Score, MetricCollection
+from torchmetrics import AUROC, Recall, Precision, F1Score, AveragePrecision, MetricCollection
 import lightning as L
 from src.factories import build_backbone, build_loss
 
@@ -19,52 +19,21 @@ class XrayClassifier(L.LightningModule):
         # average="macro" aggregates across classes internally inside torchmetrics,
         # so .compute() returns a scalar — safe for DDP sync via self.log()
 
-        def _metrics():
+        def _global_metrics():
             return MetricCollection({
-                "auc_macro": AUROC(
-                    task="multilabel",
-                    num_labels=num_classes,
-                    average="macro",
-                    sync_on_compute=True,
-                ),
-                "auc_micro": AUROC(
-                    task="multilabel",
-                    num_labels=num_classes,
-                    average="micro",
-                    sync_on_compute=True,
-                ),
-                "f1_macro": F1Score(
-                    task="multilabel",
-                    num_labels=num_classes,
-                    average="macro",
-                    sync_on_compute=True,
-                ),
-                "f1_micro": F1Score(
-                    task="multilabel",
-                    num_labels=num_classes,
-                    average="micro",
-                    sync_on_compute=True,
-                ),
-                "precision_macro": Precision(
-                    task="multilabel",
-                    num_labels=num_classes,
-                    average="macro",
-                    sync_on_compute=True,
-                ),
-                "recall_macro": Recall(
-                    task="multilabel",
-                    num_labels=num_classes,
-                    average="macro",
-                    sync_on_compute=True,
-                ),
+                "auc_macro": AUROC(task="multilabel", num_labels=num_classes, average="macro", sync_on_compute=True),
+                "auc_micro": AUROC(task="multilabel", num_labels=num_classes, average="micro", sync_on_compute=True),
+                "f1_macro": F1Score(task="multilabel", num_labels=num_classes, average="macro", sync_on_compute=True),
+                "f1_micro": F1Score(task="multilabel", num_labels=num_classes, average="micro", sync_on_compute=True),
+                "precision_macro": Precision(task="multilabel", num_labels=num_classes, average="macro", sync_on_compute=True),
+                "recall_macro": Recall(task="multilabel", num_labels=num_classes, average="macro", sync_on_compute=True),
+                "ap_macro": AveragePrecision(task="multilabel", num_labels=num_classes, average="macro", sync_on_compute=True),
+                "ap_micro": AveragePrecision(task="multilabel", num_labels=num_classes, average="micro", sync_on_compute=True),
             })
-
-        self.train_metrics = _metrics()
-        self.val_metrics   = _metrics()
-        self.test_metrics  = _metrics()
+        self.val_metrics = _global_metrics()
+        self.test_metrics = _global_metrics()
 
         # ── separate per-class metrics only for val/test (cheaper) ────────────
-        per_class_kwargs = dict(task="multilabel", num_labels=num_classes, average="none")
 
         def _per_class_metrics():
             return MetricCollection({
@@ -72,9 +41,8 @@ class XrayClassifier(L.LightningModule):
                 "f1": F1Score(task="multilabel", num_labels=num_classes, average="none", sync_on_compute=True),
                 "precision": Precision(task="multilabel", num_labels=num_classes, average="none", sync_on_compute=True),
                 "recall": Recall(task="multilabel", num_labels=num_classes, average="none", sync_on_compute=True),
+                "ap": AveragePrecision(task="multilabel", num_labels=num_classes, average="none", sync_on_compute=True),
             })
-
-        self.val_per_class_metrics  = _per_class_metrics()
         self.test_per_class_metrics = _per_class_metrics()
 
     def forward(self, x):
@@ -88,23 +56,32 @@ class XrayClassifier(L.LightningModule):
         probs  = torch.sigmoid(logits)
         y_int  = y.int()
 
-        # macro metrics — scalar output, DDP-safe via self.log_dict
-        macro_metrics = getattr(self, f"{stage}_metrics")
-        macro_metrics.update(probs, y_int)
-
-        self.log(f"{stage}/loss", loss,
-                 prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
-        self.log_dict(
-            {f"{stage}/{k}": metric for k, metric in macro_metrics.items()},
+        self.log(
+        f"{stage}/loss",
+            loss,
+            prog_bar=True,
             on_step=False,
             on_epoch=True,
             sync_dist=True,
         )
 
-        # per-class metrics only for val/test
-        if stage in ("val", "test"):
-            per_class = getattr(self, f"{stage}_per_class_metrics")
-            per_class.update(probs, y_int)
+        if stage == "train":
+            return loss
+        
+        # val/test: global metrics
+        global_metrics = getattr(self, f"{stage}_metrics")
+        global_metrics.update(probs, y_int)
+
+        self.log_dict(
+            {f"{stage}/{k}": metric for k, metric in global_metrics.items()},
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
+
+        # test only: per-class metrics
+        if stage == "test":
+            self.test_per_class_metrics.update(probs, y_int)
 
         return loss
 
@@ -126,7 +103,6 @@ class XrayClassifier(L.LightningModule):
                     sync_dist=True,
                 )
 
-    def on_validation_epoch_end(self): self._log_per_class("val")
     def on_test_epoch_end(self):       self._log_per_class("test")
 
     def training_step(self, batch, _):   return self._step(batch, "train")
