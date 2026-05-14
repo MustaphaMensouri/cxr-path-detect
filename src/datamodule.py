@@ -5,7 +5,6 @@ from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 import lightning as L
 from src.factories import build_transforms
-from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
 
 
 def load_labels(path):
@@ -22,43 +21,54 @@ class XrayDataset(Dataset):
         self.labels = [l for l in labels if l in self.df.columns]
 
         if sample_cfg is not None and sample_cfg.enabled:
-            # number of target rows
-            target_n = min(sample_cfg.size, len(self.df))
+            target_n = min(int(sample_cfg.size), len(self.df))
 
-            # build patient-level multilabel matrix
-            patient_matrix = (
-                self.df.groupby("PatientID", sort=False)[self.labels]
-                .max()
-                .reset_index()
-            )
+            if target_n >= len(self.df):
+                print("[Sample] sample size >= train size, using full train set")
+            else:
+                patient_matrix = (
+                    self.df.groupby("PatientID", sort=False)[self.labels]
+                    .max()
+                )
 
-            # estimate how many patients we need
-            avg_images_per_patient = len(self.df) / len(patient_matrix)
+                label_freq = patient_matrix[self.labels].sum(axis=0)
 
-            target_patient_count = max(
-                1,
-                int(target_n / avg_images_per_patient)
-            )
+                def key_for_patient(row):
+                    positives = [col for col in self.labels if row[col] == 1]
+                    if not positives:
+                        return "__no_positive__"
+                    return str(label_freq.loc[positives].idxmin())
 
-            # multilabel stratified sampling at patient level
-            X = patient_matrix["PatientID"].values
-            y = patient_matrix[self.labels].values
+                patient_matrix["strat_key"] = patient_matrix.apply(key_for_patient, axis=1)
 
-            msss = MultilabelStratifiedShuffleSplit(
-                n_splits=1,
-                train_size=target_patient_count,
-                random_state=sample_cfg.seed,
-            )
+                patients = patient_matrix.index.to_numpy()
+                keys = patient_matrix["strat_key"].to_numpy()
 
-            sample_patient_idx, _ = next(msss.split(X, y))
+                avg_images_per_patient = len(self.df) / len(patient_matrix)
+                target_patient_count = max(1, int(target_n / avg_images_per_patient))
+                target_patient_count = min(target_patient_count, len(patient_matrix) - 1)
 
-            sample_patient_ids = set(X[sample_patient_idx])
+                from sklearn.model_selection import train_test_split
 
-            # keep all images belonging to selected patients
-            self.df = (
-                self.df[self.df["PatientID"].isin(sample_patient_ids)]
-                .reset_index(drop=True)
-            )
+                key_counts = pd.Series(keys).value_counts()
+                stratify = keys if len(key_counts) > 1 and not (key_counts < 2).any() else None
+
+                sample_patients, _ = train_test_split(
+                    patients,
+                    train_size=target_patient_count,
+                    random_state=sample_cfg.seed,
+                    stratify=stratify,
+                )
+
+                self.df = (
+                    self.df[self.df["PatientID"].isin(set(sample_patients))]
+                    .reset_index(drop=True)
+                )
+
+                print(
+                    f"[Sample] train sampled: {len(self.df)} images, "
+                    f"{self.df['PatientID'].nunique()} patients"
+                )
     def __len__(self):
         return len(self.df)
 
