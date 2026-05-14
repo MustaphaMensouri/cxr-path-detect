@@ -604,7 +604,7 @@ def prepare_datamart(cfg: Config) -> None:
     ).to_csv(output_dir / "label_map.csv", index=False)
 
     Path(output_dir / "labels_used.txt").write_text(
-        "\n".join(kept_label_map.keys()),
+        "\n".join([label for label in kept_label_map.values()]),
         encoding="utf-8"
     )
     Path(output_dir / "config.json").write_text(json.dumps(asdict(cfg), indent=2), encoding="utf-8")

@@ -1,5 +1,5 @@
-data_dir: data/preprocessed
-labels_path: data/preprocessed/labels.txt
+data_dir: data_marts/padchest_lung_PA
+labels_path: data_marts/padchest_lung_PA/labels.txt
 num_workers: 2
 image_size: 224
 batch_size: 64
