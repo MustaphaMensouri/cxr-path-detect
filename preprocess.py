@@ -585,6 +585,15 @@ def prepare_datamart(cfg: Config) -> None:
             "image_path",
             "images/" + out["ImageID"].astype(str).apply(lambda x: Path(x).with_suffix(f".{image_ext}").name),
         )
+        # REMOVE MISSING IMAGES
+        paths = out["image_path"].apply(lambda p: output_dir / p)
+        exists = paths.apply(lambda p: p.exists())
+
+        missing_count = (~exists).sum()
+        if missing_count > 0:
+            print(f"{split_name}: removing {missing_count} missing images")
+
+        out = out[exists].copy()
         out = out.drop(columns=["target_labels"])
         out.to_csv(output_dir / f"{split_name}.csv", index=False)
         print(f"{split_name}: {len(out):,} images, {out['PatientID'].nunique():,} patients")
