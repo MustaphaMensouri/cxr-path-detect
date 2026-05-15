@@ -24,7 +24,35 @@ class WeightedBCELoss(nn.Module):
 
         return (pos_loss + neg_loss).mean()
 
+class AsymmetricLoss(nn.Module):
+    def __init__(self, gamma_neg=4.0, gamma_pos=1.0, clip=0.05, eps=1e-8):
+        super().__init__()
+        self.gamma_neg = gamma_neg
+        self.gamma_pos = gamma_pos
+        self.clip = clip
+        self.eps = eps
 
+    def forward(self, logits, targets):
+        targets = targets.float()
+
+        probs = torch.sigmoid(logits)
+        probs_pos = probs
+        probs_neg = 1.0 - probs
+
+        # asymmetric probability clipping for negatives
+        if self.clip is not None and self.clip > 0:
+            probs_neg = (probs_neg + self.clip).clamp(max=1.0)
+
+        loss_pos = targets * torch.log(probs_pos.clamp(min=self.eps))
+        loss_neg = (1.0 - targets) * torch.log(probs_neg.clamp(min=self.eps))
+
+        # asymmetric focusing
+        pt = probs_pos * targets + probs_neg * (1.0 - targets)
+        gamma = self.gamma_pos * targets + self.gamma_neg * (1.0 - targets)
+        weight = (1.0 - pt).pow(gamma)
+
+        loss = -weight * (loss_pos + loss_neg)
+        return loss.mean()
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2.0, reduction="mean"):
         super().__init__()
@@ -58,7 +86,12 @@ class FocalLoss(nn.Module):
 def build_loss(cfg):
     if cfg.name == "weighted_bce":
         return WeightedBCELoss(max_weight=cfg.max_weight)
-
+    if cfg.name == "asl":
+        return AsymmetricLoss(
+            gamma_neg=cfg.gamma_neg,
+            gamma_pos=cfg.gamma_pos,
+            clip=cfg.clip,
+        )
     if cfg.name == "focal":
         return FocalLoss(
             alpha=cfg.alpha,

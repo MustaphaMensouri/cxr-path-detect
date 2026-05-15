@@ -41,12 +41,12 @@ def train(cfg: DictConfig):
             mode="max",
             save_top_k=1,
             filename="best",
-            verbose=True,         # prints when a new best is saved
+            verbose=True,         
         ),
         EarlyStopping(
             monitor="val/auc_macro",
             mode="max",
-            patience=cfg.train.get("early_stopping_patience", 3),  # from config, not hardcoded
+            patience=cfg.train.get("early_stopping_patience", 3),
             min_delta=1e-4,       # ignore improvements
             verbose=True,
         ),
