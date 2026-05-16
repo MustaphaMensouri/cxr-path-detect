@@ -81,6 +81,23 @@ class FocalLoss(nn.Module):
         if self.reduction == "sum":
             return loss.sum()
         return loss
+class CombinedLoss(nn.Module):
+    def __init__(self, losses, weights=None):
+        super().__init__()
+        self.losses = nn.ModuleList(losses)
+
+        if weights is None:
+            weights = [1.0] * len(losses)
+
+        self.weights = weights
+
+    def forward(self, logits, targets):
+        total_loss = 0.0
+
+        for loss_fn, weight in zip(self.losses, self.weights):
+            total_loss = total_loss + weight * loss_fn(logits, targets)
+
+        return total_loss
 
 
 def build_loss(cfg):
@@ -98,6 +115,10 @@ def build_loss(cfg):
             gamma=cfg.gamma,
             reduction=cfg.reduction,
         )
+
+    elif cfg.name == "combined":
+        losses = [build_loss(loss_cfg) for loss_cfg in cfg.losses]
+        return CombinedLoss(losses, cfg.weights)
 
     raise ValueError(f"Unknown loss: {cfg.name}")
 
