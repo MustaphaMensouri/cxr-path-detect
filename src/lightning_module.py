@@ -13,7 +13,7 @@ class XrayClassifier(L.LightningModule):
 
         # ── backbone ──────────────────────────────────────────────────────────
         self.model = build_backbone(cfg.model, num_classes)
-        self.loss = build_loss(cfg.loss)
+        self.loss = build_loss("focal") + build_loss("weighted_bce")
 
         # ── metrics ───────────────────────────────────────────────────────────
         # average="macro" aggregates across classes internally inside torchmetrics,
