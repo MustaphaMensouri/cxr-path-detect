@@ -31,18 +31,22 @@ ckpt_path = f"{artifact_dir}/model.ckpt"  # or best.ckpt
 
 ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
-print(ckpt["hyper_parameters"].keys())
+hparams = ckpt["hyper_parameters"]
 
-model = XrayClassifier.load_from_checkpoint(
-    ckpt_path,
+cfg = hparams["cfg"]
+num_classes = hparams["num_classes"]
+max_epochs = hparams["max_epochs"]
+
+print("cfg keys:", cfg.keys())
+
+model = XrayClassifier(
     cfg=cfg,
-    num_classes=len(labels),
+    num_classes=num_classes,
     class_names=labels,
-    max_epochs=cfg.train.max_epochs,
-    map_location=device,
-    weights_only=False,  # okay only because this is your own trusted checkpoint
+    max_epochs=max_epochs,
 )
 
+model.load_state_dict(ckpt["state_dict"])
 model.eval()
 model.to(device)
 
