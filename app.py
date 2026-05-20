@@ -12,8 +12,8 @@ import wandb
 
 
 CKPT_PATH = "checkpoints/best.ckpt"   # change this
-CONFIG_PATH = "configs/config.yaml"   # change if needed
-LABELS_PATH = "data_marts/padchest_lung_PA/labels_used.txt"
+CONFIG_PATH = "/kaggle/working/cxr-path-detect/configs/config.yaml"   # change if needed
+LABELS_PATH = "/kaggle/working/data_marts/lung_PA_AP_AP_horizontal/labels_used.txt"
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
