@@ -3,7 +3,6 @@ import torch
 import gradio as gr
 from PIL import Image
 from omegaconf import OmegaConf
-from omegaconf import DictConfig
 
 from src.lightning_module import XrayClassifier
 from src.factories import build_transforms
@@ -11,7 +10,7 @@ from src.datamodule import load_labels
 
 import wandb
 
-torch.serialization.add_safe_globals([DictConfig])
+
 
 
 CKPT_PATH = "checkpoints/best.ckpt"   # change this
@@ -29,6 +28,10 @@ cfg = OmegaConf.load(CONFIG_PATH)
 labels = load_labels(LABELS_PATH)
 
 ckpt_path = f"{artifact_dir}/model.ckpt"  # or best.ckpt
+
+ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+
+print(ckpt["hyper_parameters"].keys())
 
 model = XrayClassifier.load_from_checkpoint(
     ckpt_path,
