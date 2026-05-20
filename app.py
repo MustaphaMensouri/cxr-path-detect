@@ -10,6 +10,8 @@ from src.datamodule import load_labels
 
 import wandb
 
+torch.serialization.add_safe_globals([DictConfig])
+
 
 CKPT_PATH = "checkpoints/best.ckpt"   # change this
 CONFIG_PATH = "/kaggle/working/cxr-path-detect/configs/config.yaml"   # change if needed
@@ -34,6 +36,7 @@ model = XrayClassifier.load_from_checkpoint(
     class_names=labels,
     max_epochs=cfg.train.max_epochs,
     map_location=device,
+    weights_only=False,  # okay only because this is your own trusted checkpoint
 )
 
 model.eval()
