@@ -3,6 +3,7 @@ import torch
 import gradio as gr
 from PIL import Image
 from omegaconf import OmegaConf
+from omegaconf import DictConfig
 
 from src.lightning_module import XrayClassifier
 from src.factories import build_transforms
