@@ -1,13 +1,26 @@
 import torch
 from torchmetrics import AUROC, Recall, Precision, F1Score, AveragePrecision, MetricCollection
 import lightning as L
+from omegaconf import OmegaConf
 from src.factories import build_backbone, build_loss
 
 class XrayClassifier(L.LightningModule):
     def __init__(self, cfg, num_classes, max_epochs, class_names=None):
         super().__init__()
-        self.save_hyperparameters(ignore=["class_names"])
-        self.cfg = cfg
+
+        cfg_to_save = (
+            OmegaConf.to_container(cfg, resolve=True)
+            if not isinstance(cfg, dict)
+            else cfg
+        )
+
+        self.save_hyperparameters({
+            "cfg": cfg_to_save,
+            "num_classes": num_classes,
+            "max_epochs": max_epochs,
+            "class_names": class_names,
+        })
+        self.cfg = OmegaConf.create(cfg_to_save)
         self.max_epochs = max_epochs
         self.class_names = class_names or [f"class_{i}" for i in range(num_classes)]
 
