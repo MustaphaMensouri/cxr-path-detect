@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.git/
+wandb/
+outputs/
+logs/
+checkpoints/
+data_marts/
+*.ckpt
+*.pth
+*.pt
