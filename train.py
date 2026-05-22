@@ -31,7 +31,7 @@ def train(cfg: DictConfig):
             run_number = 1
 
         run_name = f"experiment_{run_number}"
-        logger = WandbLogger(project=cfg.wandb.project, name=run_name, notes=cfg.wandb.notes, tags=list(cfg.wandb.tags), log_model=True, config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
+        logger = WandbLogger(project=cfg.wandb.project, name=run_name, entity=cfg.wandb.entity, notes=cfg.wandb.notes, tags=list(cfg.wandb.tags), log_model=False, config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
     else:
         logger = CSVLogger(save_dir="logs/", name="local_run")
         print("[Logger] W&B disabled — logging to terminal + CSV (logs/local_run/)")
@@ -47,10 +47,10 @@ def train(cfg: DictConfig):
             monitor="val/auc_macro",
             mode="max",
             patience=cfg.train.get("early_stopping_patience", 3),
-            min_delta=1e-4,       # ignore improvements
+            min_delta=1e-4,
             verbose=True,
         ),
-        LearningRateMonitor(logging_interval="epoch"),   # see LR curve in wandb
+        LearningRateMonitor(logging_interval="epoch"),
         TQDMProgressBar(refresh_rate=50),
     ]
 
@@ -71,8 +71,31 @@ def train(cfg: DictConfig):
     )
 
     trainer.fit(model, dm)
+
+    if use_wandb:
+        best_ckpt = trainer.checkpoint_callback.best_model_path
+
+        artifact = wandb.Artifact(
+            name=cfg.wandb.artifact_name,
+            type="model",
+            metadata={
+                "run_name": run_name,
+                "monitor": "val/auc_macro",
+                "best_model_path": best_ckpt,
+                "num_classes": len(class_names),
+                "backbone": cfg.model.backbone,
+                "loss": cfg.loss.name,
+            },
+        )
+
+        artifact.add_file(best_ckpt, name="model.ckpt")
+        artifact.add_file(cfg.data.labels_path, name="labels_used.txt")
+
+        wandb.log_artifact(artifact, aliases=["candidate"])
+    
     if cfg.train.get("run_test", False):
         trainer.test(model, dm, ckpt_path="best")
+    
     if use_wandb:
         wandb.finish()
 
