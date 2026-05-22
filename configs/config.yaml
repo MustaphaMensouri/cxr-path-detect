@@ -21,5 +21,6 @@ wandb:
   project: lung-pathology-multilabel
   entity: mustaphamensouri
   notes: "run baseline on padchest"
+  artifact_name: "lung-pathology-classifier"
   tags:
     - padchest
