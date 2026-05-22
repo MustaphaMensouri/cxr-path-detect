@@ -1,16 +1,19 @@
 import io
+import os
+
 import torch
 import wandb
 from PIL import Image
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from omegaconf import OmegaConf
 
 from src.lightning_module import XrayClassifier
 from src.factories import build_transforms
-from src.datamodule import load_labels
 
-CONFIG_PATH = "configs/config.yaml"
-LABELS_PATH = "../data_marts/lung_PA_AP_AP_horizontal/labels_used.txt"
-WANDB_ARTIFACT = "mustaphamensouri/lung-pathology-multilabel/model-2loyqw63:v0"
+WANDB_ARTIFACT = os.getenv(
+    "WANDB_ARTIFACT",
+    "mustaphamensouri/lung-pathology-multilabel/lung-pathology-classifier:production",
+)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -25,19 +28,25 @@ labels = None
 def load_model():
     global model, val_tf, labels
 
-    labels = load_labels(LABELS_PATH)
-
     api = wandb.Api()
     artifact = api.artifact(WANDB_ARTIFACT)
     artifact_dir = artifact.download()
 
-    ckpt_path = f"{artifact_dir}/model.ckpt"
+    ckpt_path = os.path.join(artifact_dir, "model.ckpt")
+
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
     hparams = ckpt["hyper_parameters"]
+    labels = hparams["class_names"]
+    if labels is None:
+        raise RuntimeError("Checkpoint does not contain class_names. Retrain or repackage the model.")
     cfg = hparams["cfg"]
-    num_classes = hparams["num_classes"]
-    max_epochs = hparams["max_epochs"]
+    
+    if isinstance(cfg, dict):
+        cfg = OmegaConf.create(cfg)
+
+    num_classes = hparams.get("num_classes", len(labels))
+    max_epochs = hparams.get("max_epochs", 1)
 
     model = XrayClassifier(
         cfg=cfg,
@@ -52,25 +61,36 @@ def load_model():
 
     _, val_tf = build_transforms(cfg.augmentation)
 
-    print("Model loaded successfully")
+    print(f"Model loaded successfully from {WANDB_ARTIFACT}")
+    print(f"Device: {device}")
+    print(f"Number of labels: {len(labels)}")
 
 
 @app.get("/")
 def root():
     return {"message": "Chest X-ray classifier API is running"}
 
+
 @app.get("/health")
 def health():
     return {
-        "status": "ok",
+        "status": "ok" if model is not None else "loading",
         "device": device,
         "num_labels": len(labels) if labels else None,
+        "artifact": WANDB_ARTIFACT,
     }
+
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...), top_k: int = 10):
+    if model is None or val_tf is None or labels is None:
+        raise HTTPException(status_code=503, detail="Model is not loaded yet")
+
     image_bytes = await file.read()
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    try:
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid image file")
 
     x = val_tf(image).unsqueeze(0).to(device)
 
