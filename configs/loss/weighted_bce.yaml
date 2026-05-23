@@ -1,0 +1,2 @@
+name: weighted_bce
+max_weight: 10.0

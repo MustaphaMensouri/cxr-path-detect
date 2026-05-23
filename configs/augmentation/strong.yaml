@@ -1,0 +1,8 @@
+name: strong
+resize: 384
+crop: 320
+affine_degrees: 10
+translate: 0.08
+scale_min: 0.90
+scale_max: 1.10
+autocontrast_p: 0.5

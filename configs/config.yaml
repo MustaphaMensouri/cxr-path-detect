@@ -1,6 +1,8 @@
 defaults:
   - data: default
   - model: default
+  - loss: weighted_bce
+  - augmentation: light
   - _self_
 
 train:
@@ -11,8 +13,14 @@ train:
   precision: 16-mixed
   log_every_n_steps: 50
   enable_progress_bar: true
-  enable_model_summary: false
+  enable_model_summary: true
+  run_test: false
 
 wandb:
-  project: cxr-lung-path
-  name: null   # auto-generated
+  enabled: true
+  project: lung-pathology-multilabel
+  entity: mustaphamensouri
+  notes: "run baseline on padchest"
+  artifact_name: "lung-pathology-classifier"
+  tags:
+    - padchest

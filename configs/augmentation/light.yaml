@@ -1,0 +1,8 @@
+name: light
+resize: 370
+crop: 320
+affine_degrees: 7
+translate: 0.05
+scale_min: 0.95
+scale_max: 1.05
+autocontrast_p: 0.3

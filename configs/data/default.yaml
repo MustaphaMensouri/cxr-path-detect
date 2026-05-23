@@ -1,8 +1,14 @@
-data_dir: data/preprocessed
+data_dir: data_marts/padchest_lung_PA
+labels_path: data_marts/padchest_lung_PA/labels.txt
 num_workers: 2
 image_size: 224
 batch_size: 64
 pin_memory: true
 prefetch_factor: 4
-
 persistent_workers: true
+
+sample:
+  enabled: false
+  size: 30000
+  seed: 42
+  rare_threshold: 500
