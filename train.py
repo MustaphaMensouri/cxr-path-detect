@@ -72,7 +72,7 @@ def train(cfg: DictConfig):
 
     trainer.fit(model, dm)
 
-    if use_wandb:
+    if use_wandb and trainer.is_global_zero:
         best_ckpt = trainer.checkpoint_callback.best_model_path
 
         artifact = wandb.Artifact(
@@ -91,7 +91,7 @@ def train(cfg: DictConfig):
         artifact.add_file(best_ckpt, name="model.ckpt")
         artifact.add_file(cfg.data.labels_path, name="labels_used.txt")
 
-        wandb.log_artifact(artifact, aliases=["candidate"])
+        logger.experiment.log_artifact(artifact, aliases=["candidate"])
     
     if cfg.train.get("run_test", False):
         trainer.test(model, dm, ckpt_path="best")
