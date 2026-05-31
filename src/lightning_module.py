@@ -55,6 +55,9 @@ class XrayClassifier(L.LightningModule):
             persistent=True,
         )
 
+        self.test_probs = []
+        self.test_targets = []
+
         # ── separate per-class metrics only for val/test (cheaper) ────────────
 
         def _per_class_metrics():
@@ -107,6 +110,8 @@ class XrayClassifier(L.LightningModule):
 
         # test only: per-class metrics
         if stage == "test":
+            self.test_probs.append(probs.detach().cpu())
+            self.test_targets.append(y_int.detach().cpu())
             self.test_per_class_metrics.update(probs, y_int)
 
         return loss
@@ -137,8 +142,6 @@ class XrayClassifier(L.LightningModule):
                     val,
                     sync_dist=True,
                 )
-
-    def on_test_epoch_end(self):       self._log_per_class("test")
 
     def tune_thresholds(self, probs, targets):
         candidates = torch.arange(0.01, 1.00, 0.01)
@@ -240,6 +243,8 @@ class XrayClassifier(L.LightningModule):
             targets,
             thresholds.cpu()
         )
+        if self.global_rank == 0:
+            print("[Thresholds]", self.best_thresholds[:10])
 
         self.log("val/f1_macro_tuned", metrics["f1_macro"], prog_bar=True, sync_dist=True)
         self.log("val/f1_micro_tuned", metrics["f1_micro"], sync_dist=True)
@@ -248,6 +253,50 @@ class XrayClassifier(L.LightningModule):
 
         self.val_probs.clear()
         self.val_targets.clear()
+    def on_test_epoch_end(self):
+        self._log_per_class("test")
+
+        if len(self.test_probs) == 0:
+            return
+
+        local_probs = torch.cat(self.test_probs, dim=0)
+        local_targets = torch.cat(self.test_targets, dim=0)
+
+        probs = self._gather_from_all_ranks(local_probs)
+        targets = self._gather_from_all_ranks(local_targets)
+
+        thresholds = self.best_thresholds.detach().cpu()
+
+        metrics = self.compute_tuned_metrics(probs, targets, thresholds)
+        if self.global_rank == 0:
+            print("[Thresholds]", self.best_thresholds[:10])
+        self.log("test/f1_macro_tuned", metrics["f1_macro"], prog_bar=True, sync_dist=True)
+        self.log("test/f1_micro_tuned", metrics["f1_micro"], sync_dist=True)
+        self.log("test/precision_macro_tuned", metrics["precision_macro"], sync_dist=True)
+        self.log("test/recall_macro_tuned", metrics["recall_macro"], sync_dist=True)
+
+        preds = (probs >= thresholds.view(1, -1)).int()
+
+        tp = ((preds == 1) & (targets == 1)).sum(dim=0).float()
+        fp = ((preds == 1) & (targets == 0)).sum(dim=0).float()
+        fn = ((preds == 0) & (targets == 1)).sum(dim=0).float()
+
+        precision = tp / (tp + fp + 1e-8)
+        recall = tp / (tp + fn + 1e-8)
+        f1 = 2 * precision * recall / (precision + recall + 1e-8)
+
+        for i, label in enumerate(self.class_names):
+            self.log(f"test/f1_tuned/{label}", f1[i], sync_dist=False, rank_zero_only=True,)
+            self.log(f"test/precision_tuned/{label}", precision[i], sync_dist=False, rank_zero_only=True,)
+            self.log(f"test/recall_tuned/{label}", recall[i], sync_dist=False, rank_zero_only=True,)
+        for i, label in enumerate(self.class_names):
+            self.log(
+                f"threshold/{label}",
+                thresholds[i],
+                rank_zero_only=True,
+            )
+        self.test_probs.clear()
+        self.test_targets.clear()
 
     def training_step(self, batch, _):   return self._step(batch, "train")
     def validation_step(self, batch, _): return self._step(batch, "val")
