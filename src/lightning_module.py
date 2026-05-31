@@ -224,7 +224,10 @@ class XrayClassifier(L.LightningModule):
 
         probs = self._gather_from_all_ranks(local_probs)
         targets = self._gather_from_all_ranks(local_targets)
-
+        
+        probs = probs.to(self.device)
+        targets = targets.to(self.device)
+        
         if self.global_rank == 0:
             thresholds, _ = self.tune_thresholds(probs, targets)
         else:
@@ -241,7 +244,7 @@ class XrayClassifier(L.LightningModule):
         metrics = self.compute_tuned_metrics(
             probs,
             targets,
-            thresholds.cpu()
+            thresholds,
         )
         if self.global_rank == 0:
             print("[Thresholds]", self.best_thresholds[:10])
@@ -265,7 +268,9 @@ class XrayClassifier(L.LightningModule):
         probs = self._gather_from_all_ranks(local_probs)
         targets = self._gather_from_all_ranks(local_targets)
 
-        thresholds = self.best_thresholds.detach().cpu()
+        probs = probs.to(self.device)
+        targets = targets.to(self.device)
+        thresholds = self.best_thresholds.detach().to(self.device)
 
         metrics = self.compute_tuned_metrics(probs, targets, thresholds)
         if self.global_rank == 0:
@@ -292,7 +297,7 @@ class XrayClassifier(L.LightningModule):
         for i, label in enumerate(self.class_names):
             self.log(
                 f"threshold/{label}",
-                thresholds[i],
+                thresholds[i].detach(),
                 rank_zero_only=True,
             )
         self.test_probs.clear()
