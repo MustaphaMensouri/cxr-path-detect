@@ -1,5 +1,6 @@
 import io
 import os
+import json
 
 import torch
 import wandb
@@ -22,11 +23,12 @@ app = FastAPI(title="Chest X-ray Multi-label Classifier API")
 model = None
 val_tf = None
 labels = None
+thresholds = None
 
 
 @app.on_event("startup")
 def load_model():
-    global model, val_tf, labels
+    global model, val_tf, labels,  thresholds
 
     api = wandb.Api()
     artifact = api.artifact(WANDB_ARTIFACT)
@@ -41,7 +43,19 @@ def load_model():
     if labels is None:
         raise RuntimeError("Checkpoint does not contain class_names. Retrain or repackage the model.")
     cfg = hparams["cfg"]
-    
+    threshold_path = os.path.join(artifact_dir, "thresholds.json")
+
+    if os.path.exists(threshold_path):
+        with open(threshold_path, "r", encoding="utf-8") as f:
+            threshold_dict = json.load(f)
+
+        thresholds = torch.tensor(
+            [threshold_dict.get(label, 0.5) for label in labels],
+            dtype=torch.float32,
+            device=device,
+        )
+    else:
+        thresholds = torch.full((len(labels),), 0.5, device=device)
     if isinstance(cfg, dict):
         cfg = OmegaConf.create(cfg)
 
@@ -83,7 +97,7 @@ def health():
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...), top_k: int = 10):
-    if model is None or val_tf is None or labels is None:
+    if model is None or val_tf is None or labels is None or thresholds is None:
         raise HTTPException(status_code=503, detail="Model is not loaded yet")
 
     image_bytes = await file.read()
@@ -96,11 +110,19 @@ async def predict(file: UploadFile = File(...), top_k: int = 10):
 
     with torch.no_grad():
         logits = model(x)
-        probs = torch.sigmoid(logits)[0].cpu().numpy()
+        probs_tensor = torch.sigmoid(logits)[0]
+        probs_tensor = probs_tensor >= thresholds
+        probs = probs_tensor.cpu().numpy()
+        preds = preds.cpu().numpy()
 
     results = [
-        {"label": label, "probability": float(prob)}
-        for label, prob in zip(labels, probs)
+        {
+            "label": label,
+            "probability": float(prob),
+            "threshold": float(thresholds[i].cpu()),
+            "positive": bool(pred),
+        }
+        for i, (label, prob, pred) in enumerate(zip(labels, probs, preds))
     ]
 
     results = sorted(results, key=lambda x: x["probability"], reverse=True)
