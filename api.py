@@ -20,7 +20,7 @@ from src.factories import build_transforms
 
 WANDB_ARTIFACT = os.getenv(
     "WANDB_ARTIFACT",
-    "mustaphamensouri/lung-pathology-multilabel/lung-pathology-classifier:production",
+    "mustaphamensouri/lung-pathology-multilabel/lung-pathology-classifier:v2",
 )
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
