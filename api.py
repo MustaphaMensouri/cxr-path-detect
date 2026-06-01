@@ -8,6 +8,13 @@ from PIL import Image
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from omegaconf import OmegaConf
 
+import base64
+import numpy as np
+import cv2
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.image import show_cam_on_image
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+
 from src.lightning_module import XrayClassifier
 from src.factories import build_transforms
 
@@ -96,11 +103,12 @@ def health():
 
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...), top_k: int = 10):
+async def predict(file: UploadFile = File(...), top_k: int = 10, max_explanations: int = 5):
     if model is None or val_tf is None or labels is None or thresholds is None:
         raise HTTPException(status_code=503, detail="Model is not loaded yet")
 
     image_bytes = await file.read()
+
     try:
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     except Exception:
@@ -111,25 +119,104 @@ async def predict(file: UploadFile = File(...), top_k: int = 10):
     with torch.no_grad():
         logits = model(x)
         probs_tensor = torch.sigmoid(logits)[0]
-        probs_tensor = probs_tensor >= thresholds
-        probs = probs_tensor.cpu().numpy()
-        preds = preds.cpu().numpy()
+        preds_tensor = probs_tensor >= thresholds
 
-    results = [
-        {
-            "label": label,
-            "probability": float(prob),
-            "threshold": float(thresholds[i].cpu()),
-            "positive": bool(pred),
+    probs = probs_tensor.detach().cpu().numpy()
+    preds = preds_tensor.detach().cpu().numpy()
+
+    positive_indices = [i for i, pred in enumerate(preds) if pred]
+
+    positive_indices = sorted(
+        positive_indices,
+        key=lambda i: probs[i],
+        reverse=True,
+    )
+
+    explained_indices = set(positive_indices[:max_explanations])
+
+    results = []
+
+    for i in positive_indices[:top_k]:
+        item = {
+            "label": labels[i],
+            "probability": float(probs[i]),
+            "threshold": float(thresholds[i].detach().cpu()),
+            "positive": bool(preds[i]),
         }
-        for i, (label, prob, pred) in enumerate(zip(labels, probs, preds))
-    ]
 
-    results = sorted(results, key=lambda x: x["probability"], reverse=True)
+        if i in explained_indices:
+            item["gradcam"] = generate_gradcam_base64(
+                image=image,
+                input_tensor=x,
+                class_idx=i,
+                cfg=model.cfg,
+            )
+
+        results.append(item)
 
     return {
         "filename": file.filename,
         "top_k": top_k,
-        "predictions": results[:top_k],
-        "disclaimer": "Research/demo use only. Not for medical diagnosis.",
+        "max_explanations": max_explanations,
+        "predictions": results,
     }
+
+
+def get_target_layer(model):
+    backbone = model.model
+
+    if hasattr(backbone, "features"):  # DenseNet / ConvNeXt
+        return backbone.features[-1]
+
+    if hasattr(backbone, "layer4"):  # ResNet
+        return backbone.layer4[-1]
+
+    raise RuntimeError("Grad-CAM target layer not supported for this backbone yet.")
+
+
+def image_to_base64(img_rgb):
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    ok, buffer = cv2.imencode(".jpg", img_bgr)
+    if not ok:
+        raise RuntimeError("Could not encode Grad-CAM image")
+    return base64.b64encode(buffer).decode("utf-8")
+
+
+def prepare_display_image(image, cfg):
+    resize = cfg.augmentation.resize
+    crop = cfg.augmentation.crop
+
+    image = image.convert("RGB")
+    image = image.resize((resize, resize))
+
+    left = (resize - crop) // 2
+    top = (resize - crop) // 2
+    image = image.crop((left, top, left + crop, top + crop))
+
+    return np.array(image).astype(np.float32) / 255.0
+
+
+def generate_gradcam_base64(image, input_tensor, class_idx, cfg):
+    target_layer = get_target_layer(model)
+
+    cam = GradCAM(
+        model=model,
+        target_layers=[target_layer],
+    )
+
+    targets = [ClassifierOutputTarget(class_idx)]
+
+    grayscale_cam = cam(
+        input_tensor=input_tensor,
+        targets=targets,
+    )[0]
+
+    rgb_img = prepare_display_image(image, cfg)
+
+    overlay = show_cam_on_image(
+        rgb_img,
+        grayscale_cam,
+        use_rgb=True,
+    )
+
+    return image_to_base64(overlay)

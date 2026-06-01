@@ -10,3 +10,5 @@ wandb
 pillow
 pandas
 scikit-learn
+grad-cam
+opencv-python
