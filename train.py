@@ -11,6 +11,9 @@ from src.lightning_module import XrayClassifier
 import torch
 torch.serialization.add_safe_globals([DictConfig])
 
+import json
+from pathlib import Path
+
 
 
 @hydra.main(config_path="configs", config_name="config", version_base=None)
@@ -37,14 +40,14 @@ def train(cfg: DictConfig):
         print("[Logger] W&B disabled — logging to terminal + CSV (logs/local_run/)")
     callbacks = [
         ModelCheckpoint(
-            monitor="val/auc_macro",
+            monitor="val/f1_macro_tuned",
             mode="max",
             save_top_k=1,
             filename="best",
             verbose=True,         
         ),
         EarlyStopping(
-            monitor="val/auc_macro",
+            monitor="val/f1_macro_tuned",
             mode="max",
             patience=cfg.train.get("early_stopping_patience", 3),
             min_delta=1e-4,
@@ -75,12 +78,29 @@ def train(cfg: DictConfig):
     if use_wandb and trainer.is_global_zero:
         best_ckpt = trainer.checkpoint_callback.best_model_path
 
+        best_model = XrayClassifier.load_from_checkpoint(
+            best_ckpt,
+            cfg=cfg,
+            num_classes=len(class_names),
+            class_names=class_names,
+            max_epochs=cfg.train.max_epochs,
+        )
+
+        thresholds = best_model.best_thresholds.detach().cpu().tolist()
+        threshold_data = {
+            label: float(th)
+            for label, th in zip(class_names, thresholds)
+        }
+
+        threshold_path = Path("thresholds.json")
+        threshold_path.write_text(json.dumps(threshold_data, indent=2), encoding="utf-8")
+
         artifact = wandb.Artifact(
             name=cfg.wandb.artifact_name,
             type="model",
             metadata={
                 "run_name": run_name,
-                "monitor": "val/auc_macro",
+                "monitor": "val/f1_macro_tuned",
                 "best_model_path": best_ckpt,
                 "num_classes": len(class_names),
                 "backbone": cfg.model.backbone,
@@ -88,10 +108,11 @@ def train(cfg: DictConfig):
             },
         )
 
+        artifact.add_file(threshold_path, name="thresholds.json")
         artifact.add_file(best_ckpt, name="model.ckpt")
         artifact.add_file(cfg.data.labels_path, name="labels_used.txt")
 
-        logger.experiment.log_artifact(artifact, aliases=["candidate"])
+        logger.experiment.log_artifact(artifact, aliases=["candidate"])    
     
     if cfg.train.get("run_test", False):
         trainer.test(model, dm, ckpt_path="best")

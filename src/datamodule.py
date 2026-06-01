@@ -29,7 +29,7 @@ class XrayDataset(Dataset):
                 print("[Sample] sample size >= train size, using full train set")
             else:
 
-                def stratified_patient_sample(df_pool, target_images, seed):
+                def stratified_patient_sample(df_pool, target_images, seed, pool_name="pool"):
                     patient_matrix = df_pool.groupby("PatientID", sort=False)[self.labels].max()
 
                     label_freq = patient_matrix[self.labels].sum(axis=0)
@@ -50,9 +50,54 @@ class XrayDataset(Dataset):
                     target_patient_count = min(target_patient_count, len(patient_matrix))
 
                     key_counts = pd.Series(keys).value_counts()
-                    stratify = keys if len(key_counts) > 1 and not (key_counts < 2).any() else None
+                    n_classes = len(key_counts)
+
+                    leftover_patient_count = len(patient_matrix) - target_patient_count
+
+                    can_stratify = (
+                        n_classes > 1
+                        and not (key_counts < 2).any()
+                        and target_patient_count >= n_classes
+                        and leftover_patient_count >= n_classes
+                    )
+
+                    stratify = keys if can_stratify else None
+
+                    print("\n" + "=" * 80)
+                    print(f"[Sample:{pool_name}] Pool images: {len(df_pool):,}")
+                    print(f"[Sample:{pool_name}] Pool patients: {len(patient_matrix):,}")
+                    print(f"[Sample:{pool_name}] Target images requested: {target_images:,}")
+                    print(f"[Sample:{pool_name}] Avg images/patient: {avg_images_per_patient:.3f}")
+                    print(f"[Sample:{pool_name}] Target patients estimated: {target_patient_count:,}")
+                    print(f"[Sample:{pool_name}] Leftover patients if sampled: {leftover_patient_count:,}")
+                    print(f"[Sample:{pool_name}] Stratification classes/keys: {n_classes:,}")
+                    print(f"[Sample:{pool_name}] Min patients per key: {key_counts.min()}")
+                    print(f"[Sample:{pool_name}] Max patients per key: {key_counts.max()}")
+                    print(f"[Sample:{pool_name}] Stratification enabled: {can_stratify}")
+
+                    if not can_stratify:
+                        print(f"[Sample:{pool_name}] Stratification disabled reason(s):")
+                        if n_classes <= 1:
+                            print("  - Only one stratification class.")
+                        if (key_counts < 2).any():
+                            print("  - Some stratification classes have fewer than 2 patients.")
+                        if target_patient_count < n_classes:
+                            print(
+                                f"  - Selected side too small: "
+                                f"target_patient_count={target_patient_count} < n_classes={n_classes}"
+                            )
+                        if leftover_patient_count < n_classes:
+                            print(
+                                f"  - Leftover side too small: "
+                                f"leftover_patient_count={leftover_patient_count} < n_classes={n_classes}"
+                            )
+
+                    print(f"[Sample:{pool_name}] Top 10 stratification keys:")
+                    print(key_counts.head(10).to_string())
+                    print("=" * 80 + "\n")
 
                     if target_patient_count >= len(patient_matrix):
+                        print(f"[Sample:{pool_name}] Target patients >= pool patients, keeping all patients.")
                         return set(patients)
 
                     sample_patients, _ = train_test_split(
@@ -61,6 +106,7 @@ class XrayDataset(Dataset):
                         random_state=seed,
                         stratify=stratify,
                     )
+
                     return set(sample_patients)
 
                 # 1. Find rare labels inside the current train split
@@ -80,19 +126,57 @@ class XrayDataset(Dataset):
                 common_df = self.df[~self.df["PatientID"].isin(rare_patients)].copy()
 
                 # 3. If rare block is already bigger than target, sample rare patients only
+                print("\n" + "#" * 80)
+                print("[Sample] Sampling configuration")
+                print(f"[Sample] Target images: {target_n:,}")
+                print(f"[Sample] Full train images before sampling: {len(self.df):,}")
+                print(f"[Sample] Full train patients before sampling: {self.df['PatientID'].nunique():,}")
+                print(f"[Sample] Rare threshold: labels with < {rare_threshold} positives")
+                print(f"[Sample] Number of labels used: {len(self.labels)}")
+                print(f"[Sample] Number of rare labels: {len(rare_labels)}")
+
+                if rare_labels:
+                    print("[Sample] Rare labels and counts:")
+                    rare_counts = label_counts[rare_labels].sort_values()
+                    print(rare_counts.to_string())
+                else:
+                    print("[Sample] No rare labels found.")
+
+                print(f"[Sample] Rare patients: {len(rare_patients):,}")
+                print(f"[Sample] Rare block images: {len(rare_df):,}")
+                print(f"[Sample] Common block images: {len(common_df):,}")
+                print(f"[Sample] Common block patients: {common_df['PatientID'].nunique():,}")
+                print("#" * 80 + "\n")
+
                 if len(rare_df) >= target_n:
+                    print(
+                        f"[Sample] Rare block already has {len(rare_df):,} images, "
+                        f"which is >= target {target_n:,}."
+                    )
+                    print("[Sample] Sampling only from rare-patient block.")
+
                     selected_patients = stratified_patient_sample(
                         rare_df,
                         target_images=target_n,
                         seed=sample_cfg.seed,
+                        pool_name="rare_only",
                     )
                 else:
                     remaining_budget = target_n - len(rare_df)
+
+                    print(
+                        f"[Sample] Keeping all rare patients first: {len(rare_df):,} images."
+                    )
+                    print(
+                        f"[Sample] Remaining image budget to fill from common patients: "
+                        f"{remaining_budget:,}"
+                    )
 
                     common_patients = stratified_patient_sample(
                         common_df,
                         target_images=remaining_budget,
                         seed=sample_cfg.seed,
+                        pool_name="common_fill",
                     ) if len(common_df) > 0 and remaining_budget > 0 else set()
 
                     selected_patients = rare_patients | common_patients
@@ -101,6 +185,21 @@ class XrayDataset(Dataset):
                     self.df[self.df["PatientID"].isin(selected_patients)]
                     .reset_index(drop=True)
                 )
+
+                sample_label_counts = self.df[self.labels].sum(axis=0).sort_values(ascending=False)
+                sample_patient_count = self.df["PatientID"].nunique()
+
+                print("\n" + "#" * 80)
+                print("[Sample] Final sampled train set")
+                print(f"[Sample] Final sampled images: {len(self.df):,}")
+                print(f"[Sample] Final sampled patients: {sample_patient_count:,}")
+                print(f"[Sample] Requested target images: {target_n:,}")
+                print(f"[Sample] Difference from target: {len(self.df) - target_n:+,}")
+                print("[Sample] Top 15 labels in sampled set:")
+                print(sample_label_counts.head(15).to_string())
+                print("[Sample] Bottom 15 labels in sampled set:")
+                print(sample_label_counts.tail(15).to_string())
+                print("#" * 80 + "\n")
 
                 print(
                     f"[Sample] rare threshold: <{rare_threshold} positives | "

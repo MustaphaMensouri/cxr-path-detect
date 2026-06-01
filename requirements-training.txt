@@ -1,0 +1,14 @@
+torch
+torchvision
+lightning
+
+wandb
+hydra-core
+omegaconf
+
+numpy
+pandas
+scikit-learn
+
+matplotlib
+tqdm
