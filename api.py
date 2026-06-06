@@ -18,6 +18,8 @@ from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from src.lightning_module import XrayClassifier
 from src.factories import build_transforms
 
+from fastapi.middleware.cors import CORSMiddleware
+
 WANDB_ARTIFACT = os.getenv(
     "WANDB_ARTIFACT",
     "mustaphamensouri/lung-pathology-multilabel/lung-pathology-classifier:v2",
@@ -26,6 +28,16 @@ WANDB_ARTIFACT = os.getenv(
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 app = FastAPI(title="Chest X-ray Multi-label Classifier API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "*",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 model = None
 val_tf = None
