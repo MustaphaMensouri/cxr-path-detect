@@ -11,8 +11,7 @@ from omegaconf import OmegaConf
 import base64
 import numpy as np
 import cv2
-from pytorch_grad_cam import GradCAM
-from pytorch_grad_cam.utils.image import show_cam_on_image
+from pytorch_grad_cam import GradCAMPlusPlus
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 
 from src.lightning_module import XrayClassifier
@@ -137,40 +136,61 @@ async def predict(file: UploadFile = File(...), top_k: int = 10, max_explanation
     preds = preds_tensor.detach().cpu().numpy()
 
     positive_indices = [i for i, pred in enumerate(preds) if pred]
+    positive_indices = sorted(positive_indices, key=lambda i: probs[i], reverse=True)
 
-    positive_indices = sorted(
-        positive_indices,
-        key=lambda i: probs[i],
-        reverse=True,
-    )
-
-    explained_indices = set(positive_indices[:max_explanations])
+    top_indices = positive_indices[:top_k]
+    explained_indices = set(top_indices[:max_explanations])
 
     results = []
 
-    for i in positive_indices[:top_k]:
-        item = {
-            "label": labels[i],
-            "probability": float(probs[i]),
-            "threshold": float(thresholds[i].detach().cpu()),
-            "positive": bool(preds[i]),
-        }
+    if explained_indices:
+        target_layer = get_target_layer(model)
 
-        if i in explained_indices:
-            item["gradcam"] = generate_gradcam_base64(
-                image=image,
-                input_tensor=x,
-                class_idx=i,
-                cfg=model.cfg,
-            )
+        with GradCAMPlusPlus(
+            model=model,
+            target_layers=[target_layer],
+        ) as cam:
+            for i in top_indices:
+                item = {
+                    "label": labels[i],
+                    "probability": float(probs[i]),
+                    "threshold": float(thresholds[i].detach().cpu()),
+                    "positive": bool(preds[i]),
+                }
 
-        results.append(item)
+                if i in explained_indices:
+                    item["heatmap_png"] = generate_heatmap_png_base64(
+                        cam=cam,
+                        input_tensor=x,
+                        class_idx=i,
+                    )
+                    item["explanation_method"] = "gradcam++"
+                    item["heatmap_mime_type"] = "image/png"
+
+                results.append(item)
+    else:
+        for i in top_indices:
+            results.append({
+                "label": labels[i],
+                "probability": float(probs[i]),
+                "threshold": float(thresholds[i].detach().cpu()),
+                "positive": bool(preds[i]),
+            })
 
     return {
         "filename": file.filename,
         "top_k": top_k,
         "max_explanations": max_explanations,
         "predictions": results,
+        "preprocessing": {
+            "resize": int(model.cfg.augmentation.resize),
+            "crop": int(model.cfg.augmentation.crop),
+            "type": "resize_then_center_crop",
+        },
+        "heatmap_size": {
+            "width": int(x.shape[-1]),
+            "height": int(x.shape[-2]),
+        },
     }
 
 
@@ -186,49 +206,38 @@ def get_target_layer(model):
     raise RuntimeError("Grad-CAM target layer not supported for this backbone yet.")
 
 
-def image_to_base64(img_rgb):
-    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-    ok, buffer = cv2.imencode(".jpg", img_bgr)
+def heatmap_to_transparent_png_base64(
+    grayscale_cam,
+    alpha_max=180,
+    min_alpha_activation=0.08,
+):
+    grayscale_cam = np.clip(grayscale_cam, 0.0, 1.0)
+
+    cam_uint8 = np.uint8(255 * grayscale_cam)
+
+    heatmap_bgr = cv2.applyColorMap(cam_uint8, cv2.COLORMAP_JET)
+    heatmap_bgra = cv2.cvtColor(heatmap_bgr, cv2.COLOR_BGR2BGRA)
+
+    alpha = (alpha_max * grayscale_cam).astype(np.uint8)
+    alpha[grayscale_cam < min_alpha_activation] = 0
+
+    heatmap_bgra[:, :, 3] = alpha
+
+    ok, buffer = cv2.imencode(".png", heatmap_bgra)
     if not ok:
-        raise RuntimeError("Could not encode Grad-CAM image")
+        raise RuntimeError("Could not encode transparent Grad-CAM++ heatmap")
+
     return base64.b64encode(buffer).decode("utf-8")
 
-
-def prepare_display_image(image, cfg):
-    resize = cfg.augmentation.resize
-    crop = cfg.augmentation.crop
-
-    image = image.convert("RGB")
-    image = image.resize((resize, resize))
-
-    left = (resize - crop) // 2
-    top = (resize - crop) // 2
-    image = image.crop((left, top, left + crop, top + crop))
-
-    return np.array(image).astype(np.float32) / 255.0
-
-
-def generate_gradcam_base64(image, input_tensor, class_idx, cfg):
-    target_layer = get_target_layer(model)
-
-    cam = GradCAM(
-        model=model,
-        target_layers=[target_layer],
-    )
-
+def generate_heatmap_png_base64(cam, input_tensor, class_idx):
     targets = [ClassifierOutputTarget(class_idx)]
-
     grayscale_cam = cam(
         input_tensor=input_tensor,
         targets=targets,
     )[0]
 
-    rgb_img = prepare_display_image(image, cfg)
-
-    overlay = show_cam_on_image(
-        rgb_img,
+    return heatmap_to_transparent_png_base64(
         grayscale_cam,
-        use_rgb=True,
+        alpha_max=180,
+        min_alpha_activation=0.08,
     )
-
-    return image_to_base64(overlay)
