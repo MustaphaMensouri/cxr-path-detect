@@ -159,13 +159,16 @@ async def predict(file: UploadFile = File(...), top_k: int = 10, max_explanation
                 }
 
                 if i in explained_indices:
-                    item["heatmap_png"] = generate_heatmap_png_base64(
-                        cam=cam,
-                        input_tensor=x,
-                        class_idx=i,
-                    )
-                    item["explanation_method"] = "gradcam++"
-                    item["heatmap_mime_type"] = "image/png"
+                    heatmap_png, attention_boxes = generate_explanation(
+                    cam=cam,
+                    input_tensor=x,
+                    class_idx=i,
+                )
+
+                item["heatmap_png"] = heatmap_png
+                item["attention_boxes"] = attention_boxes
+                item["explanation_method"] = "gradcam++"
+                item["heatmap_mime_type"] = "image/png"
 
                 results.append(item)
     else:
@@ -229,15 +232,65 @@ def heatmap_to_transparent_png_base64(
 
     return base64.b64encode(buffer).decode("utf-8")
 
-def generate_heatmap_png_base64(cam, input_tensor, class_idx):
+def generate_explanation(cam, input_tensor, class_idx):
     targets = [ClassifierOutputTarget(class_idx)]
     grayscale_cam = cam(
         input_tensor=input_tensor,
         targets=targets,
     )[0]
-
-    return heatmap_to_transparent_png_base64(
+    heatmap_png = heatmap_to_transparent_png_base64(
         grayscale_cam,
         alpha_max=180,
         min_alpha_activation=0.08,
     )
+    attention_boxes = cam_to_attention_boxes(
+        grayscale_cam,
+        max_boxes=4,
+        threshold=0.45,
+        min_area=80,
+    )
+
+    return heatmap_png, attention_boxes
+
+def cam_to_attention_boxes(
+    grayscale_cam,
+    max_boxes=4,
+    threshold=0.45,
+    min_area=80,
+):
+    cam = np.clip(grayscale_cam, 0.0, 1.0)
+
+    mask = (cam >= threshold).astype(np.uint8) * 255
+
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(
+        mask,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE,
+    )
+
+    boxes = []
+
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        area = w * h
+
+        if area < min_area:
+            continue
+
+        region_score = float(cam[y:y + h, x:x + w].mean())
+
+        boxes.append({
+            "x": int(x),
+            "y": int(y),
+            "width": int(w),
+            "height": int(h),
+            "score": region_score,
+        })
+
+    boxes = sorted(boxes, key=lambda b: b["score"], reverse=True)
+
+    return boxes[:max_boxes]
