@@ -10,19 +10,25 @@ class WeightedBCELoss(nn.Module):
         self.max_weight = max_weight
 
     def forward(self, logits, targets):
-        P = targets.sum(dim=0).clamp(min=1)
-        N = (1 - targets).sum(dim=0).clamp(min=1)
+        logits = logits.float()
+        targets = targets.float()
+
+        P = targets.sum(dim=0).clamp(min=1.0)
+        N = (1.0 - targets).sum(dim=0).clamp(min=1.0)
         total = P + N
 
         beta_p = (total / P).clamp(max=self.max_weight)
         beta_n = (total / N).clamp(max=self.max_weight)
 
-        probs = torch.sigmoid(logits).clamp(1e-7, 1 - 1e-7)
+        bce = nn.functional.binary_cross_entropy_with_logits(
+            logits,
+            targets,
+            reduction="none",
+        )
 
-        pos_loss = -beta_p * targets * torch.log(probs)
-        neg_loss = -beta_n * (1 - targets) * torch.log(1 - probs)
+        weights = targets * beta_p + (1.0 - targets) * beta_n
 
-        return (pos_loss + neg_loss).mean()
+        return (weights * bce).mean()
 
 class AsymmetricLoss(nn.Module):
     def __init__(self, gamma_neg=4.0, gamma_pos=1.0, clip=0.05, eps=1e-8):
