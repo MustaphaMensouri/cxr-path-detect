@@ -18,7 +18,7 @@ train:
 
 wandb:
   enabled: true
-  project: lung-pathology-multilabel
+  project: lung-pathology-classification
   entity: mustaphamensouri
   notes: "run baseline on padchest"
   artifact_name: "lung-pathology-classifier"
